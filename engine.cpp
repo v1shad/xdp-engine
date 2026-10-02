@@ -30,9 +30,12 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include "event.h"
 
 using namespace std::chrono_literals;   // enables 200ms, 60s literals
 using Clock = std::chrono::steady_clock; // monotonic clock: immune to system time changes
+
+void emit_event(const Event& e);
 
 /* ---------- tiny thread-safe logger (two threads print: avoid garbled output) ---------- */
 static void log(const std::string& msg) {
@@ -253,57 +256,76 @@ private:
 /* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
 class SshDetector {
 public:
-    SshDetector(BlockList& bl, std::string path, std::size_t threshold, std::chrono::seconds window)
-    : blocklist_{bl}, path_{std::move(path)}, threshold_{threshold}, window_{window} {}
+    SshDetector(std::string path)
+    : path_{std::move(path)} {}
 
-    void run(std::stop_token st) {              // jthread supplies the stop_token
+    void run(std::stop_token st) {
         std::ifstream in{path_};
         if (!in) { log("[error] cannot open log: " + path_); return; }
-        in.seekg(0, std::ios::end);             // start at END: only react to NEW lines (like tail -f)
+        in.seekg(0, std::ios::end);
         std::string line;
         while (!st.stop_requested()) {
             if (std::getline(in, line)) handle_line(line);
-            else { in.clear(); std::this_thread::sleep_for(200ms); }  // EOF: reset flags, wait
+            else { in.clear(); std::this_thread::sleep_for(200ms); }
         }
     }
 
 private:
     void handle_line(const std::string& line) {
         static const std::regex re{
-            R"(Failed password for (?:invalid user )?\S+ from (\d{1,3}(?:\.\d{1,3}){3}))"};
+            R"(Failed password for (?:invalid user )?(\S+) from (\d{1,3}(?:\.\d{1,3}){3}))"};
         std::smatch m;
         if (!std::regex_search(line, m, re)) return;
-        auto ip = parse_ipv4(m[1].str());
-        if (!ip) return;
+        
+        std::string user = m[1].str();
+        std::string ip_str = m[2].str();
+        
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        char time_buf[32];
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
 
-        const auto now = Clock::now();
-        auto& attempts = tries_[*ip];                       // deque of timestamps for this IP
-        attempts.push_back(now);
-        while (!attempts.empty() && now - attempts.front() > window_)
-            attempts.pop_front();                           // slide the window forward
-
-        if (attempts.size() >= threshold_) {
-            const auto n = attempts.size();
-            if (blocklist_.block(*ip, "ssh brute force, " + std::to_string(n) + " failures"))
-                tries_.erase(*ip);                          // 'attempts' is invalid after this line
-        }
+        Event e;
+        e.ts_iso = time_buf;
+        e.source = "ssh_log";
+        e.type = "ssh_failed";
+        e.src_ip = ip_str;
+        e.user = user;
+        e.severity = 3;
+        
+        emit_event(e);
     }
 
-    BlockList& blocklist_;
     std::string path_;
-    std::size_t threshold_;
-    std::chrono::seconds window_;
-    std::unordered_map<std::uint32_t, std::deque<Clock::time_point>> tries_;
 };
 
-/* ---------- graceful Ctrl-C ---------- */
+#include "event.h"
+
+void emit_event(const Event& e) {
+    log("[EVENT] " + e.to_json().dump());
+}
+
 static std::atomic<bool> g_running{true};
 extern "C" void on_signal(int) { g_running = false; }
 
 static int handle_event(void* /*ctx*/, void *data, size_t size) {
     if (size < sizeof(struct drop_event)) return 0;
-    auto* e = static_cast<struct drop_event*>(data);
-    log("[DROP] " + ip_to_string(e->src_ip) + " total_hits=" + std::to_string(e->total_hits));
+    auto* ev = static_cast<struct drop_event*>(data);
+    
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    char time_buf[32];
+    strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
+
+    Event e;
+    e.ts_iso = time_buf;
+    e.source = "xdp_ringbuf";
+    e.type = "packet_dropped";
+    e.src_ip = ip_to_string(ev->src_ip);
+    e.user = "";
+    e.severity = 5;
+    
+    emit_event(e);
     return 0;
 }
 
@@ -329,7 +351,7 @@ int main(int argc, char** argv) {
     try {
         XdpEngine engine{argv[2], argv[1]};                             // load + attach
         BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), allow};
-        SshDetector detector{blocklist, argv[3], 5, 60s};               // 5 failures / 60 s
+        SshDetector detector{argv[3]};
         std::jthread watcher{[&detector](std::stop_token st) { detector.run(st); }};
 
         RingBufPtr rb{ring_buffer__new(engine.events_fd(), handle_event, nullptr, nullptr)};
