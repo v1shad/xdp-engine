@@ -32,11 +32,13 @@
 #include <vector>
 #include "event.h"
 #include "rule_engine.h"
+#include "storage.h"
 
 using namespace std::chrono_literals;   // enables 200ms, 60s literals
 using Clock = std::chrono::steady_clock; // monotonic clock: immune to system time changes
 
 extern std::unique_ptr<RuleEngine> g_rule_engine;
+extern std::unique_ptr<Storage> g_storage;
 
 void emit_event(const Event& e);
 
@@ -48,13 +50,21 @@ static void log(const std::string& msg) {
 }
 
 std::unique_ptr<RuleEngine> g_rule_engine;
+std::unique_ptr<Storage> g_storage;
 
 void emit_event(const Event& e) {
     log("[EVENT] " + e.to_json().dump());
+    if (g_storage) {
+        g_storage->insert_event(e);
+    }
+    
     if (g_rule_engine) {
         auto alerts = g_rule_engine->process(e);
         for (const auto& a : alerts) {
             log("[ALERT] " + a.to_json().dump());
+            if (g_storage) {
+                g_storage->insert_alert(a);
+            }
         }
     }
 }
@@ -360,6 +370,7 @@ int main(int argc, char** argv) {
     sigaction(SIGTERM, &sa, nullptr);
 
     try {
+        g_storage = std::make_unique<Storage>("engine.db");
         g_rule_engine = std::make_unique<RuleEngine>("rules.yaml");
 
         XdpEngine engine{argv[2], argv[1]};                             // load + attach
@@ -376,7 +387,7 @@ int main(int argc, char** argv) {
         }};
 
         log("[engine] XDP attached to " + std::string{argv[1]} +
-        ". Commands: allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | quit");
+        ". Commands: allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | alerts | quit");
 
         std::string line;
         while (g_running && std::getline(std::cin, line)) {
@@ -386,6 +397,9 @@ int main(int argc, char** argv) {
             if (cmd == "quit") break;
             else if (cmd == "list")  blocklist.print_blocked();
             else if (cmd == "stats") blocklist.print_stats();
+            else if (cmd == "alerts") {
+                if (g_storage) g_storage->print_last_alerts(10);
+            }
             else if (cmd == "block" || cmd == "unblock" || cmd == "allow" || cmd == "unallow") {
                 if (auto ip = parse_ipv4(arg)) {
                     if (cmd == "block") blocklist.block(*ip, "manual");
