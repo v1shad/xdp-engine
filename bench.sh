@@ -26,13 +26,13 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 get_iptables_raw_drops() {
-    local pkts=$(iptables -t raw -nvx -L PREROUTING 2>/dev/null | awk '/10\.10\.0\.2.*DROP/ {print $1}')
-    echo "${pkts:-0}"
+    local pkts=$(iptables -t raw -nvx -L PREROUTING 2>/dev/null | grep DROP | grep "10.10.0.2" | awk '{print $1}')
+    echo "${pkts:-n/a}"
 }
 
 get_iptables_filter_drops() {
-    local pkts=$(iptables -nvx -L INPUT 2>/dev/null | awk '/10\.10\.0\.2.*DROP/ {print $1}')
-    echo "${pkts:-0}"
+    local pkts=$(iptables -nvx -L INPUT 2>/dev/null | grep DROP | grep "10.10.0.2" | awk '{print $1}')
+    echo "${pkts:-n/a}"
 }
 
 run_scenario() {
@@ -101,9 +101,13 @@ run_scenario() {
         local pps=$(( (rx_end - rx_start) / DURATION ))
         sum_pps=$((sum_pps + pps))
         
-        local drops_d=$((drops_end - drops_start))
-        local dps=$(( drops_d / DURATION ))
-        sum_drops=$((sum_drops + dps))
+        if [[ "$drops_end" == "n/a" || "$drops_start" == "n/a" ]]; then
+            sum_drops="n/a"
+        elif [[ "$sum_drops" != "n/a" ]]; then
+            local drops_d=$((drops_end - drops_start))
+            local dps=$(( drops_d / DURATION ))
+            sum_drops=$((sum_drops + dps))
+        fi
         
         local sys_busy=0
         local sys_soft=0
@@ -137,11 +141,25 @@ run_scenario() {
         sleep 2
     done
     
-    export "${name}_PPS"="$((sum_pps / 3))"
+    local avg_pps=$((sum_pps / 3))
+    local avg_core=$((sum_core / 3))
+    export "${name}_PPS"="$avg_pps"
     export "${name}_BUSY"="$((sum_busy / 3))"
     export "${name}_SOFT"="$((sum_soft / 3))"
-    export "${name}_CORE"="$((sum_core / 3))"
-    export "${name}_DROPS"="$((sum_drops / 3))"
+    export "${name}_CORE"="$avg_core"
+    
+    if [[ "$sum_drops" == "n/a" ]]; then
+        export "${name}_DROPS"="n/a"
+    else
+        export "${name}_DROPS"="$((sum_drops / 3))"
+    fi
+
+    if [ "$avg_pps" -gt 0 ]; then
+        local core_per_1k=$(awk "BEGIN { printf \"%.3f\", $avg_core / ($avg_pps / 1000.0) }")
+        export "${name}_CORE1K"="$core_per_1k"
+    else
+        export "${name}_CORE1K"="n/a"
+    fi
 }
 
 run_scenario "BASELINE"
@@ -150,16 +168,18 @@ run_scenario "IPTABLES_RAW"
 run_scenario "XDP"
 
 echo "" | tee -a "$RESULTS_FILE"
-echo "=================================================================================" | tee -a "$RESULTS_FILE"
-echo "                           BENCHMARK RESULTS (AVERAGE OF 3 RUNS)                 " | tee -a "$RESULTS_FILE"
-echo "=================================================================================" | tee -a "$RESULTS_FILE"
-printf "%-18s | %-12s | %-12s | %-9s | %-9s | %-9s\n" "SCENARIO" "RX PKTS/SEC" "DROP PKTS/SEC" "SYS CPU %" "SYS SOFT%" "MAX CORE%" | tee -a "$RESULTS_FILE"
-echo "---------------------------------------------------------------------------------" | tee -a "$RESULTS_FILE"
-printf "%-18s | %-12s | %-12s | %-9s | %-9s | %-9s\n" "1. BASELINE" "${BASELINE_PPS}" "${BASELINE_DROPS}" "${BASELINE_BUSY}" "${BASELINE_SOFT}" "${BASELINE_CORE}" | tee -a "$RESULTS_FILE"
-printf "%-18s | %-12s | %-12s | %-9s | %-9s | %-9s\n" "2. IPTABLES_FILTER" "${IPTABLES_FILTER_PPS}" "${IPTABLES_FILTER_DROPS}" "${IPTABLES_FILTER_BUSY}" "${IPTABLES_FILTER_SOFT}" "${IPTABLES_FILTER_CORE}" | tee -a "$RESULTS_FILE"
-printf "%-18s | %-12s | %-12s | %-9s | %-9s | %-9s\n" "3. IPTABLES_RAW" "${IPTABLES_RAW_PPS}" "${IPTABLES_RAW_DROPS}" "${IPTABLES_RAW_BUSY}" "${IPTABLES_RAW_SOFT}" "${IPTABLES_RAW_CORE}" | tee -a "$RESULTS_FILE"
-printf "%-18s | %-12s | %-12s | %-9s | %-9s | %-9s\n" "4. XDP ($XDP_MODE)" "${XDP_PPS}" "${XDP_DROPS}" "${XDP_BUSY}" "${XDP_SOFT}" "${XDP_CORE}" | tee -a "$RESULTS_FILE"
-echo "=================================================================================" | tee -a "$RESULTS_FILE"
-echo "* Veth is virtual; results on real NICs were not measured." | tee -a "$RESULTS_FILE"
+echo "=================================================================================================" | tee -a "$RESULTS_FILE"
+echo "                             BENCHMARK RESULTS (AVERAGE OF 3 RUNS)                               " | tee -a "$RESULTS_FILE"
+echo "=================================================================================================" | tee -a "$RESULTS_FILE"
+printf "%-18s | %-12s | %-13s | %-9s | %-9s | %-9s | %-12s\n" "SCENARIO" "RX PKTS/SEC" "DROP PKTS/SEC" "SYS CPU %" "SYS SOFT%" "MAX CORE%" "CORE%/1kPPS" | tee -a "$RESULTS_FILE"
+echo "-------------------------------------------------------------------------------------------------" | tee -a "$RESULTS_FILE"
+printf "%-18s | %-12s | %-13s | %-9s | %-9s | %-9s | %-12s\n" "1. BASELINE" "${BASELINE_PPS}" "${BASELINE_DROPS}" "${BASELINE_BUSY}" "${BASELINE_SOFT}" "${BASELINE_CORE}" "${BASELINE_CORE1K}" | tee -a "$RESULTS_FILE"
+printf "%-18s | %-12s | %-13s | %-9s | %-9s | %-9s | %-12s\n" "2. IPTABLES_FILTER" "${IPTABLES_FILTER_PPS}" "${IPTABLES_FILTER_DROPS}" "${IPTABLES_FILTER_BUSY}" "${IPTABLES_FILTER_SOFT}" "${IPTABLES_FILTER_CORE}" "${IPTABLES_FILTER_CORE1K}" | tee -a "$RESULTS_FILE"
+printf "%-18s | %-12s | %-13s | %-9s | %-9s | %-9s | %-12s\n" "3. IPTABLES_RAW" "${IPTABLES_RAW_PPS}" "${IPTABLES_RAW_DROPS}" "${IPTABLES_RAW_BUSY}" "${IPTABLES_RAW_SOFT}" "${IPTABLES_RAW_CORE}" "${IPTABLES_RAW_CORE1K}" | tee -a "$RESULTS_FILE"
+printf "%-18s | %-12s | %-13s | %-9s | %-9s | %-9s | %-12s\n" "4. XDP ($XDP_MODE)" "${XDP_PPS}" "${XDP_DROPS}" "${XDP_BUSY}" "${XDP_SOFT}" "${XDP_CORE}" "${XDP_CORE1K}" | tee -a "$RESULTS_FILE"
+echo "=================================================================================================" | tee -a "$RESULTS_FILE"
+echo "* RX pps = flood arrival rate, a proxy for per-packet cost." | tee -a "$RESULTS_FILE"
+echo "  Counters come from different sources; ~±5% skew is expected." | tee -a "$RESULTS_FILE"
+echo "  Veth is virtual; results on real NICs were not measured." | tee -a "$RESULTS_FILE"
 echo "Results saved to $RESULTS_FILE"
 echo ""
