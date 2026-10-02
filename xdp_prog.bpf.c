@@ -4,13 +4,14 @@
 #include <linux/ip.h>           // struct iphdr (IPv4 header layout)
 #include <bpf/bpf_helpers.h>    // SEC(), __uint(), __type(), bpf_map_lookup_elem()
 #include <bpf/bpf_endian.h>     // bpf_htons() for byte-order conversion
+#include "common.h"
 
 /* ---------- MAP 1: blocklist (key = source IPv4, value = drop counter) ---------- */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);   // hash table: ~O(1) lookup
     __uint(max_entries, 10240);        // capacity is fixed at creation; the kernel preallocates
     __type(key, __u32);                // IPv4 address as 32-bit integer (network byte order)
-    __type(value, __u64);              // number of packets dropped from this IP
+    __type(value, struct block_record); // drop counter + expiry timestamp
 } blocked_ips SEC(".maps");            // SEC(".maps") puts this into the ELF ".maps" section
 // so libbpf knows to create a map from it
 
@@ -60,14 +61,13 @@ struct {
      // is what user space stores as key (inet_pton output)
 
      /* ---- Consult the shared whiteboard ---- */
-     __u64 *hits = bpf_map_lookup_elem(&blocked_ips, &src_ip);  // NULL if not present. The verifier
-     // requires the key pointer to be
-     // initialized stack memory (it is).
-     if (hits) {                                    // non-NULL => this IP is banned
-         __sync_fetch_and_add(hits, 1);             // atomic += 1: many CPUs can hit the same
-         // entry at once, so a plain ++ would lose counts
-         bump(0);                                   // global "dropped" counter
-         return XDP_DROP;                           // verdict: discard now, before any sk_buff exists
+     struct block_record *rec = bpf_map_lookup_elem(&blocked_ips, &src_ip);
+     if (rec) {
+         if (rec->expires_at_ns == 0 || bpf_ktime_get_ns() <= rec->expires_at_ns) {
+             __sync_fetch_and_add(&rec->hits, 1);       // atomic += 1
+             bump(0);                                   // global "dropped" counter
+             return XDP_DROP;                           // verdict: discard now
+         }
      }
 
      bump(1);                                       // global "passed" counter

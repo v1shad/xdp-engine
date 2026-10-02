@@ -4,10 +4,12 @@
 #include <signal.h>         // sigaction
 #include <bpf/bpf.h>        // bpf_map_update_elem, bpf_map_lookup_elem, ... (syscall wrappers)
 #include <bpf/libbpf.h>     // bpf_object__open_file, bpf_program__attach_xdp, ...
+#include "common.h"
 
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -68,19 +70,32 @@ std::string ip_to_string(std::uint32_t ip_net) {
     return buf;
 }
 
+constexpr std::chrono::seconds DEFAULT_BLOCK_DURATION{600}; // 10 minutes
+
 /* ---------- BlockList: the C++ face of the kernel maps ---------- */
 class BlockList {
 public:
     BlockList(int blocked_fd, int stats_fd, std::unordered_set<std::uint32_t> allow)
-    : blocked_fd_{blocked_fd}, stats_fd_{stats_fd}, allow_{std::move(allow)} {}
+    : blocked_fd_{blocked_fd}, stats_fd_{stats_fd}, allow_{std::move(allow)},
+      sweeper_{[this](std::stop_token st) { sweep_loop(st); }} {}
 
-    bool block(std::uint32_t ip, std::string_view reason) {
+    bool block(std::uint32_t ip, std::string_view reason, std::chrono::seconds duration = DEFAULT_BLOCK_DURATION) {
         if (allow_.contains(ip)) {           // C++20 contains(): never lock ourselves out
             log("[warn] refusing to block allow-listed " + ip_to_string(ip));
             return false;
         }
-        std::uint64_t hits = 0;              // starting drop counter
-        if (!map_update(blocked_fd_, ip, hits)) {
+        
+        struct block_record rec{};
+        rec.hits = 0;
+        if (duration.count() > 0) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            rec.expires_at_ns = (ts.tv_sec * 1000000000ULL + ts.tv_nsec) + (duration.count() * 1000000000ULL);
+        } else {
+            rec.expires_at_ns = 0;
+        }
+
+        if (!map_update(blocked_fd_, ip, rec)) {
             log(std::string{"[error] map update failed: "} + std::strerror(errno));
             return false;
         }
@@ -98,14 +113,29 @@ public:
     }
 
     void print_blocked() const {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        __u64 now = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+
         std::uint32_t key{}, next{};
         const std::uint32_t* prev = nullptr;               // nullptr => "give me the first key"
         int count = 0;
         while (bpf_map_get_next_key(blocked_fd_, prev, &next) == 0) {  // iterate the hash table
-            std::uint64_t hits = 0;
-            bpf_map_lookup_elem(blocked_fd_, &next, &hits);
-            log("  " + ip_to_string(next) + "  dropped=" + std::to_string(hits));
-            key = next; prev = &key; ++count;
+            struct block_record rec{};
+            if (bpf_map_lookup_elem(blocked_fd_, &next, &rec) == 0) {
+                std::string expire_str = "permanent";
+                if (rec.expires_at_ns != 0) {
+                    if (rec.expires_at_ns > now) {
+                        __u64 remain = (rec.expires_at_ns - now) / 1000000000ULL;
+                        expire_str = std::to_string(remain) + "s";
+                    } else {
+                        expire_str = "EXPIRED";
+                    }
+                }
+                log("  " + ip_to_string(next) + "  dropped=" + std::to_string(rec.hits) + " expires in " + expire_str);
+                ++count;
+            }
+            key = next; prev = &key;
         }
         log("  (" + std::to_string(count) + " blocked IPs)");
     }
@@ -125,8 +155,33 @@ private:
         return std::accumulate(per_cpu.begin(), per_cpu.end(), std::uint64_t{0});
     }
 
+    void sweep_loop(std::stop_token st) {
+        while (!st.stop_requested()) {
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            __u64 now = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+
+            std::uint32_t key{}, next{};
+            const std::uint32_t* prev = nullptr;
+            while (bpf_map_get_next_key(blocked_fd_, prev, &next) == 0) {
+                struct block_record rec{};
+                if (bpf_map_lookup_elem(blocked_fd_, &next, &rec) == 0) {
+                    if (rec.expires_at_ns != 0 && rec.expires_at_ns < now) {
+                        bpf_map_delete_elem(blocked_fd_, &next);
+                        log("[EXPIRED] " + ip_to_string(next));
+                    }
+                }
+                key = next; prev = &key;
+            }
+            // wait for 5 seconds or until stop requested
+            std::mutex m; std::unique_lock lk(m);
+            std::condition_variable_any().wait_for(lk, st, 5s, []{return false;});
+        }
+    }
+
     int blocked_fd_, stats_fd_;
     std::unordered_set<std::uint32_t> allow_;
+    std::jthread sweeper_;
 };
 
 /* ---------- XdpEngine: load + attach, with automatic detach ---------- */
