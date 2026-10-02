@@ -37,36 +37,13 @@
 using namespace std::chrono_literals;   // enables 200ms, 60s literals
 using Clock = std::chrono::steady_clock; // monotonic clock: immune to system time changes
 
-extern std::unique_ptr<RuleEngine> g_rule_engine;
-extern std::unique_ptr<Storage> g_storage;
-
-void emit_event(const Event& e);
+using EventCallback = std::function<void(const Event&)>;
 
 /* ---------- tiny thread-safe logger (two threads print: avoid garbled output) ---------- */
 static void log(const std::string& msg) {
     static std::mutex io_mutex;
     std::lock_guard lock{io_mutex};      // CTAD: template argument deduced automatically
     std::cout << msg << std::endl;
-}
-
-std::unique_ptr<RuleEngine> g_rule_engine;
-std::unique_ptr<Storage> g_storage;
-
-void emit_event(const Event& e) {
-    log("[EVENT] " + e.to_json().dump());
-    if (g_storage) {
-        g_storage->insert_event(e);
-    }
-    
-    if (g_rule_engine) {
-        auto alerts = g_rule_engine->process(e);
-        for (const auto& a : alerts) {
-            log("[ALERT] " + a.to_json().dump());
-            if (g_storage) {
-                g_storage->insert_alert(a);
-            }
-        }
-    }
 }
 
 /* ---------- RAII wrappers: C resources -> automatic cleanup ---------- */
@@ -281,8 +258,8 @@ private:
 /* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
 class SshDetector {
 public:
-    SshDetector(std::string path)
-    : path_{std::move(path)} {}
+    SshDetector(std::string path, EventCallback cb)
+    : path_{std::move(path)}, cb_{std::move(cb)} {}
 
     void run(std::stop_token st) {
         std::ifstream in{path_};
@@ -318,10 +295,11 @@ private:
         e.user = user;
         e.severity = 3;
         
-        emit_event(e);
+        if (cb_) cb_(e);
     }
 
     std::string path_;
+    EventCallback cb_;
 };
 
 #include "event.h"
@@ -329,7 +307,7 @@ private:
 static std::atomic<bool> g_running{true};
 extern "C" void on_signal(int) { g_running = false; }
 
-static int handle_event(void* /*ctx*/, void *data, size_t size) {
+static int handle_event(void* ctx, void *data, size_t size) {
     if (size < sizeof(struct drop_event)) return 0;
     auto* ev = static_cast<struct drop_event*>(data);
     
@@ -346,7 +324,10 @@ static int handle_event(void* /*ctx*/, void *data, size_t size) {
     e.user = "";
     e.severity = 5;
     
-    emit_event(e);
+    if (ctx) {
+        auto* cb = static_cast<EventCallback*>(ctx);
+        (*cb)(e);
+    }
     return 0;
 }
 
@@ -370,15 +351,35 @@ int main(int argc, char** argv) {
     sigaction(SIGTERM, &sa, nullptr);
 
     try {
-        g_storage = std::make_unique<Storage>("engine.db");
-        g_rule_engine = std::make_unique<RuleEngine>("rules.yaml");
+        Storage storage{"engine.db"};
+        RuleEngine rule_engine{"rules.yaml"};
 
-        XdpEngine engine{argv[2], argv[1]};                             // load + attach
+        XdpEngine engine{argv[2], argv[1]};
         BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), allow};
-        SshDetector detector{argv[3]};
+        
+        EventCallback on_event = [&](const Event& e) {
+            log("[EVENT] " + e.to_json().dump());
+            storage.insert_event(e);
+            
+            auto alerts = rule_engine.process(e);
+            for (const auto& a : alerts) {
+                log("[ALERT] " + a.to_json().dump());
+                storage.insert_alert(a);
+                if (a.action == "block") {
+                    if (auto ip = parse_ipv4(a.src_ip)) {
+                        if (blocklist.block(*ip, a.rule, std::chrono::seconds(a.block_seconds))) {
+                            ActionRecord act{a.ts_iso, a.src_ip, "block", a.rule};
+                            storage.insert_action(act);
+                        }
+                    }
+                }
+            }
+        };
+
+        SshDetector detector{argv[3], on_event};
         std::jthread watcher{[&detector](std::stop_token st) { detector.run(st); }};
 
-        RingBufPtr rb{ring_buffer__new(engine.events_fd(), handle_event, nullptr, nullptr)};
+        RingBufPtr rb{ring_buffer__new(engine.events_fd(), handle_event, &on_event, nullptr)};
         if (!rb) throw std::runtime_error("failed to create ring buffer");
         std::jthread rb_poller{[&rb](std::stop_token st) {
             while (!st.stop_requested()) {
@@ -397,9 +398,7 @@ int main(int argc, char** argv) {
             if (cmd == "quit") break;
             else if (cmd == "list")  blocklist.print_blocked();
             else if (cmd == "stats") blocklist.print_stats();
-            else if (cmd == "alerts") {
-                if (g_storage) g_storage->print_last_alerts(10);
-            }
+            else if (cmd == "alerts") storage.print_last_alerts(10);
             else if (cmd == "block" || cmd == "unblock" || cmd == "allow" || cmd == "unallow") {
                 if (auto ip = parse_ipv4(arg)) {
                     if (cmd == "block") blocklist.block(*ip, "manual");
