@@ -75,12 +75,38 @@ constexpr std::chrono::seconds DEFAULT_BLOCK_DURATION{600}; // 10 minutes
 /* ---------- BlockList: the C++ face of the kernel maps ---------- */
 class BlockList {
 public:
-    BlockList(int blocked_fd, int stats_fd, std::unordered_set<std::uint32_t> allow)
-    : blocked_fd_{blocked_fd}, stats_fd_{stats_fd}, allow_{std::move(allow)},
-      sweeper_{[this](std::stop_token st) { sweep_loop(st); }} {}
+    BlockList(int allowed_fd, int blocked_fd, int stats_fd, const std::unordered_set<std::uint32_t>& allow)
+    : allowed_fd_{allowed_fd}, blocked_fd_{blocked_fd}, stats_fd_{stats_fd},
+      sweeper_{[this](std::stop_token st) { sweep_loop(st); }} {
+        for (std::uint32_t ip : allow) {
+            allow_ip(ip);
+        }
+    }
+
+    bool allow_ip(std::uint32_t ip) {
+        std::uint8_t dummy = 1;
+        if (!map_update(allowed_fd_, ip, dummy)) {
+            log(std::string{"[error] allow map update failed: "} + std::strerror(errno));
+            return false;
+        }
+        log("[ALLOWED] " + ip_to_string(ip));
+        // unblock it if it was blocked
+        bpf_map_delete_elem(blocked_fd_, &ip);
+        return true;
+    }
+
+    bool unallow_ip(std::uint32_t ip) {
+        if (bpf_map_delete_elem(allowed_fd_, &ip) != 0) {
+            log("[info] " + ip_to_string(ip) + " was not in allowlist");
+            return false;
+        }
+        log("[UNALLOWED] " + ip_to_string(ip));
+        return true;
+    }
 
     bool block(std::uint32_t ip, std::string_view reason, std::chrono::seconds duration = DEFAULT_BLOCK_DURATION) {
-        if (allow_.contains(ip)) {           // C++20 contains(): never lock ourselves out
+        std::uint8_t dummy = 0;
+        if (bpf_map_lookup_elem(allowed_fd_, &ip, &dummy) == 0) {
             log("[warn] refusing to block allow-listed " + ip_to_string(ip));
             return false;
         }
@@ -179,8 +205,7 @@ private:
         }
     }
 
-    int blocked_fd_, stats_fd_;
-    std::unordered_set<std::uint32_t> allow_;
+    int allowed_fd_, blocked_fd_, stats_fd_;
     std::jthread sweeper_;
 };
 
@@ -198,23 +223,26 @@ public:
             throw std::runtime_error("load failed (verifier?): " + std::string{std::strerror(-err)});
 
         bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_firewall");
+        bpf_map* allowed  = bpf_object__find_map_by_name(obj_.get(), "allowed_ips");
         bpf_map* blocked  = bpf_object__find_map_by_name(obj_.get(), "blocked_ips");
         bpf_map* stats    = bpf_object__find_map_by_name(obj_.get(), "stats");
-        if (!prog || !blocked || !stats) throw std::runtime_error("program/map not found in object");
+        if (!prog || !allowed || !blocked || !stats) throw std::runtime_error("program/map not found in object");
 
+        allowed_fd_ = bpf_map__fd(allowed);
         blocked_fd_ = bpf_map__fd(blocked);       // integer handles for the bpf() syscall
         stats_fd_   = bpf_map__fd(stats);
 
         link_.reset(bpf_program__attach_xdp(prog, static_cast<int>(ifindex)));  // (3) hook into NIC
         if (!link_) throw std::runtime_error("attach failed: " + std::string{std::strerror(errno)});
     }
+    int allowed_fd() const { return allowed_fd_; }
     int blocked_fd() const { return blocked_fd_; }
     int stats_fd()   const { return stats_fd_; }
 
 private:
     ObjPtr  obj_;      // declared first => destroyed LAST (link must go before the object)
     LinkPtr link_;     // destroyed first => XDP program detaches from the interface
-    int blocked_fd_{-1}, stats_fd_{-1};
+    int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1};
 };
 
 /* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
@@ -288,12 +316,12 @@ int main(int argc, char** argv) {
 
     try {
         XdpEngine engine{argv[2], argv[1]};                             // load + attach
-        BlockList blocklist{engine.blocked_fd(), engine.stats_fd(), allow};
+        BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), allow};
         SshDetector detector{blocklist, argv[3], 5, 60s};               // 5 failures / 60 s
         std::jthread watcher{[&detector](std::stop_token st) { detector.run(st); }};
 
         log("[engine] XDP attached to " + std::string{argv[1]} +
-        ". Commands: block <ip> | unblock <ip> | list | stats | quit");
+        ". Commands: allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | quit");
 
         std::string line;
         while (g_running && std::getline(std::cin, line)) {
@@ -303,10 +331,12 @@ int main(int argc, char** argv) {
             if (cmd == "quit") break;
             else if (cmd == "list")  blocklist.print_blocked();
             else if (cmd == "stats") blocklist.print_stats();
-            else if (cmd == "block" || cmd == "unblock") {
+            else if (cmd == "block" || cmd == "unblock" || cmd == "allow" || cmd == "unallow") {
                 if (auto ip = parse_ipv4(arg)) {
                     if (cmd == "block") blocklist.block(*ip, "manual");
-                    else blocklist.unblock(*ip);
+                    else if (cmd == "unblock") blocklist.unblock(*ip);
+                    else if (cmd == "allow") blocklist.allow_ip(*ip);
+                    else if (cmd == "unallow") blocklist.unallow_ip(*ip);
                 } else log("[error] invalid IPv4 address");
             } else if (!cmd.empty()) log("[error] unknown command");
         }

@@ -6,7 +6,15 @@
 #include <bpf/bpf_endian.h>     // bpf_htons() for byte-order conversion
 #include "common.h"
 
-/* ---------- MAP 1: blocklist (key = source IPv4, value = drop counter) ---------- */
+/* ---------- MAP 1: allowlist (key = source IPv4, value = boolean dummy) ---------- */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, __u8);
+} allowed_ips SEC(".maps");
+
+/* ---------- MAP 2: blocklist (key = source IPv4, value = drop counter) ---------- */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);   // hash table: ~O(1) lookup
     __uint(max_entries, 10240);        // capacity is fixed at creation; the kernel preallocates
@@ -15,7 +23,7 @@ struct {
 } blocked_ips SEC(".maps");            // SEC(".maps") puts this into the ELF ".maps" section
 // so libbpf knows to create a map from it
 
-/* ---------- MAP 2: global counters, one slot per CPU (no lock contention) ---------- */
+/* ---------- MAP 3: global counters, one slot per CPU (no lock contention) ---------- */
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 2);            // index 0 = dropped, index 1 = passed
@@ -59,6 +67,13 @@ struct {
 
      __u32 src_ip = ip->saddr;                      // source address; stays in network byte order, which
      // is what user space stores as key (inet_pton output)
+
+     /* ---- Check Allowlist FIRST ---- */
+     __u8 *allowed = bpf_map_lookup_elem(&allowed_ips, &src_ip);
+     if (allowed) {
+         bump(1);
+         return XDP_PASS;
+     }
 
      /* ---- Consult the shared whiteboard ---- */
      struct block_record *rec = bpf_map_lookup_elem(&blocked_ips, &src_ip);
