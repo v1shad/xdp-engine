@@ -31,9 +31,12 @@
 #include <unordered_set>
 #include <vector>
 #include "event.h"
+#include "rule_engine.h"
 
 using namespace std::chrono_literals;   // enables 200ms, 60s literals
 using Clock = std::chrono::steady_clock; // monotonic clock: immune to system time changes
+
+extern std::unique_ptr<RuleEngine> g_rule_engine;
 
 void emit_event(const Event& e);
 
@@ -42,6 +45,18 @@ static void log(const std::string& msg) {
     static std::mutex io_mutex;
     std::lock_guard lock{io_mutex};      // CTAD: template argument deduced automatically
     std::cout << msg << std::endl;
+}
+
+std::unique_ptr<RuleEngine> g_rule_engine;
+
+void emit_event(const Event& e) {
+    log("[EVENT] " + e.to_json().dump());
+    if (g_rule_engine) {
+        auto alerts = g_rule_engine->process(e);
+        for (const auto& a : alerts) {
+            log("[ALERT] " + a.to_json().dump());
+        }
+    }
 }
 
 /* ---------- RAII wrappers: C resources -> automatic cleanup ---------- */
@@ -301,10 +316,6 @@ private:
 
 #include "event.h"
 
-void emit_event(const Event& e) {
-    log("[EVENT] " + e.to_json().dump());
-}
-
 static std::atomic<bool> g_running{true};
 extern "C" void on_signal(int) { g_running = false; }
 
@@ -349,6 +360,8 @@ int main(int argc, char** argv) {
     sigaction(SIGTERM, &sa, nullptr);
 
     try {
+        g_rule_engine = std::make_unique<RuleEngine>("rules.yaml");
+
         XdpEngine engine{argv[2], argv[1]};                             // load + attach
         BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), allow};
         SshDetector detector{argv[3]};

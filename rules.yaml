@@ -1,0 +1,8 @@
+- name: SSH_BRUTE_FORCE
+  match_type: ssh_failed
+  threshold: 5
+  window_seconds: 60
+  severity: high
+  mitre: T1110
+  action: block
+  block_seconds: 600
