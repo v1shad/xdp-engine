@@ -31,6 +31,12 @@ struct {
     __type(value, __u64);
 } stats SEC(".maps");
 
+/* ---------- MAP 4: ring buffer for sampled drop events ---------- */
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024);   // 256 KB buffer
+} events SEC(".maps");
+
 /* Helper: increment stats[idx]. __always_inline because old BPF disallowed real function
  calls; the compiler must paste this body into the caller. */
  static __always_inline void bump(__u32 idx)
@@ -79,8 +85,20 @@ struct {
      struct block_record *rec = bpf_map_lookup_elem(&blocked_ips, &src_ip);
      if (rec) {
          if (rec->expires_at_ns == 0 || bpf_ktime_get_ns() <= rec->expires_at_ns) {
-             __sync_fetch_and_add(&rec->hits, 1);       // atomic += 1
+             __u64 old_hits = __sync_fetch_and_add(&rec->hits, 1);       // atomic += 1
              bump(0);                                   // global "dropped" counter
+             
+             // Sample drop events (every 64th packet) so a flood doesn't flood user space
+             if ((old_hits % 64) == 0) {
+                 struct drop_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+                 if (e) { // MANDATORY NULL CHECK: verifier rejects without this
+                     e->ts_ns = bpf_ktime_get_ns();
+                     e->src_ip = src_ip;
+                     e->pad = 0;
+                     e->total_hits = old_hits + 1;
+                     bpf_ringbuf_submit(e, 0);
+                 }
+             }
              return XDP_DROP;                           // verdict: discard now
          }
      }

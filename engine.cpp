@@ -44,8 +44,10 @@ static void log(const std::string& msg) {
 /* ---------- RAII wrappers: C resources -> automatic cleanup ---------- */
 struct ObjDeleter  { void operator()(bpf_object* o) const noexcept { if (o) bpf_object__close(o); } };
 struct LinkDeleter { void operator()(bpf_link*   l) const noexcept { if (l) bpf_link__destroy(l); } };
+struct RingDeleter { void operator()(ring_buffer* r) const noexcept { if (r) ring_buffer__free(r); } };
 using ObjPtr  = std::unique_ptr<bpf_object, ObjDeleter>;
 using LinkPtr = std::unique_ptr<bpf_link,  LinkDeleter>;
+using RingBufPtr = std::unique_ptr<ring_buffer, RingDeleter>;
 
 /* ---------- C++20 concept: only raw-copyable types may cross into the kernel ---------- */
 template <typename T>
@@ -226,11 +228,13 @@ public:
         bpf_map* allowed  = bpf_object__find_map_by_name(obj_.get(), "allowed_ips");
         bpf_map* blocked  = bpf_object__find_map_by_name(obj_.get(), "blocked_ips");
         bpf_map* stats    = bpf_object__find_map_by_name(obj_.get(), "stats");
-        if (!prog || !allowed || !blocked || !stats) throw std::runtime_error("program/map not found in object");
+        bpf_map* events   = bpf_object__find_map_by_name(obj_.get(), "events");
+        if (!prog || !allowed || !blocked || !stats || !events) throw std::runtime_error("program/map not found in object");
 
         allowed_fd_ = bpf_map__fd(allowed);
         blocked_fd_ = bpf_map__fd(blocked);       // integer handles for the bpf() syscall
         stats_fd_   = bpf_map__fd(stats);
+        events_fd_  = bpf_map__fd(events);
 
         link_.reset(bpf_program__attach_xdp(prog, static_cast<int>(ifindex)));  // (3) hook into NIC
         if (!link_) throw std::runtime_error("attach failed: " + std::string{std::strerror(errno)});
@@ -238,11 +242,12 @@ public:
     int allowed_fd() const { return allowed_fd_; }
     int blocked_fd() const { return blocked_fd_; }
     int stats_fd()   const { return stats_fd_; }
+    int events_fd()  const { return events_fd_; }
 
 private:
     ObjPtr  obj_;      // declared first => destroyed LAST (link must go before the object)
     LinkPtr link_;     // destroyed first => XDP program detaches from the interface
-    int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1};
+    int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1}, events_fd_{-1};
 };
 
 /* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
@@ -295,6 +300,13 @@ private:
 static std::atomic<bool> g_running{true};
 extern "C" void on_signal(int) { g_running = false; }
 
+static int handle_event(void* /*ctx*/, void *data, size_t size) {
+    if (size < sizeof(struct drop_event)) return 0;
+    auto* e = static_cast<struct drop_event*>(data);
+    log("[DROP] " + ip_to_string(e->src_ip) + " total_hits=" + std::to_string(e->total_hits));
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 4) {
         std::cerr << "usage: sudo " << argv[0]
@@ -319,6 +331,14 @@ int main(int argc, char** argv) {
         BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), allow};
         SshDetector detector{blocklist, argv[3], 5, 60s};               // 5 failures / 60 s
         std::jthread watcher{[&detector](std::stop_token st) { detector.run(st); }};
+
+        RingBufPtr rb{ring_buffer__new(engine.events_fd(), handle_event, nullptr, nullptr)};
+        if (!rb) throw std::runtime_error("failed to create ring buffer");
+        std::jthread rb_poller{[&rb](std::stop_token st) {
+            while (!st.stop_requested()) {
+                ring_buffer__poll(rb.get(), 100);
+            }
+        }};
 
         log("[engine] XDP attached to " + std::string{argv[1]} +
         ". Commands: allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | quit");
