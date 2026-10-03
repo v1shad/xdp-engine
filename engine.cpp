@@ -391,6 +391,9 @@ static int handle_event(void* ctx, void *data, size_t size) {
     e.source = "xdp_ringbuf";
     if (ev->reason == REASON_RATELIMIT) {
         e.type = "rate_limit_exceeded";
+    } else if (ev->reason == REASON_PORTSCAN) {
+        e.type = "port_scan";
+        e.severity = 4; // Or something
     } else {
         e.type = "packet_dropped";
     }

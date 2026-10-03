@@ -62,6 +62,23 @@ struct {
     __type(value, __u32);
 } limits SEC(".maps");
 
+struct scan_state_record {
+    __u64 window_start_ns;
+    __u32 count;           // Number of distinct ports seen in this window
+    __u16 last_ports[8];   // Small array of recently seen ports (approximation)
+    __u8  index;           // Circular buffer index for last_ports
+    __u8  reported;        // Avoid emitting multiple events in the same window
+    __u16 pad;
+};
+
+/* ---------- MAP 8: port scan state ---------- */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u32);    // src_ip
+    __type(value, struct scan_state_record);
+} scan_state SEC(".maps");
+
 /* ---------- MAP 7: protocol counters ---------- */
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -161,6 +178,52 @@ struct {
          
          if (tcp->syn && !tcp->ack) {
              __u64 now = bpf_ktime_get_ns();
+             
+             /* ---- Port Scan Detector ---- */
+             struct scan_state_record *ss = bpf_map_lookup_elem(&scan_state, &src_ip);
+             __u16 dport = tcp->dest;
+             __u8 new_port = 1;
+             
+             if (ss) {
+                 if (now - ss->window_start_ns >= 5000000000ULL) { // 5 seconds
+                     ss->window_start_ns = now;
+                     ss->count = 1;
+                     ss->index = 0;
+                     ss->reported = 0;
+                     __builtin_memset(ss->last_ports, 0, sizeof(ss->last_ports));
+                     ss->last_ports[0] = dport;
+                 } else {
+                     #pragma unroll
+                     for (int i = 0; i < 8; i++) {
+                         if (ss->last_ports[i] == dport) {
+                             new_port = 0;
+                             break;
+                         }
+                     }
+                     if (new_port) {
+                         ss->count++;
+                         ss->index = (ss->index + 1) & 7; // mod 8
+                         ss->last_ports[ss->index] = dport;
+                     }
+                     if (ss->count >= 10 && !ss->reported) {
+                         ss->reported = 1;
+                         struct drop_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+                         if (e) {
+                             e->ts_ns = now;
+                             e->src_ip = src_ip;
+                             e->reason = REASON_PORTSCAN;
+                             e->total_hits = ss->count;
+                             bpf_ringbuf_submit(e, 0);
+                         }
+                     }
+                 }
+             } else {
+                 struct scan_state_record new_ss = {};
+                 new_ss.window_start_ns = now;
+                 new_ss.count = 1;
+                 new_ss.last_ports[0] = dport;
+                 bpf_map_update_elem(&scan_state, &src_ip, &new_ss, BPF_ANY);
+             }
              struct rate_state_record *rs = bpf_map_lookup_elem(&rate_state, &src_ip);
              __u32 current_count = 1;
              
