@@ -79,3 +79,20 @@ We use a virtual lab environment consisting of a network namespace (`attacker`) 
     sudo bpftool map dump name blocked_ips
     ```
     This will dump the raw hexadecimal keys (IPs) and values (hit counts) currently stored in the map.
+
+### 5. How to demo
+To demonstrate the full dashboard and engine pipeline to your professor:
+1. Open terminal 1 and start the Flask dashboard:
+   ```bash
+   python3 dashboard/app.py
+   ```
+2. Open your web browser and navigate to `http://127.0.0.1:5000`. You should see the empty dashboard.
+3. Open terminal 2 and start the engine with the dummy log file:
+   ```bash
+   sudo ./engine veth-host xdp_prog.bpf.o /tmp/fake_auth.log
+   ```
+4. Open terminal 3 and run the demo script to simulate an attack:
+   ```bash
+   ./demo_attack.sh 10.10.0.2
+   ```
+5. Watch the dashboard! The events will rise, then an alert will be generated, the IP will appear in the Top Attackers chart and Recent Alerts table, the Active Blocks will increase, and the Drops chart will spike if you run a ping or hping flood.

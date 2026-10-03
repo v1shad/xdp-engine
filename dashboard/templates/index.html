@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>XDP Intrusion Engine Dashboard</title>
+    <style>
+        body {
+            background-color: #121212;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+        }
+        h1, h2 { color: #bb86fc; }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .card {
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        .card-value {
+            font-size: 3em;
+            font-weight: bold;
+            color: #03dac6;
+        }
+        .card-title {
+            font-size: 1.2em;
+            color: #aaaaaa;
+            text-transform: uppercase;
+        }
+        .charts {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .chart-container {
+            background: #1e1e1e;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1e1e1e;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th, td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+            font-size: 1.2em;
+        }
+        th { background: #2c2c2c; color: #bb86fc; }
+        .severity-high { color: #cf6679; font-weight: bold; }
+        .action-block { color: #cf6679; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h1>Intrusion Engine Dashboard</h1>
+    
+    <div class="grid">
+        <div class="card">
+            <div class="card-value" id="val-events">0</div>
+            <div class="card-title">Total Events</div>
+        </div>
+        <div class="card">
+            <div class="card-value" id="val-alerts">0</div>
+            <div class="card-title">Total Alerts</div>
+        </div>
+        <div class="card">
+            <div class="card-value" id="val-blocks">0</div>
+            <div class="card-title">Active Blocks</div>
+        </div>
+        <div class="card">
+            <div class="card-value" id="val-drops">0</div>
+            <div class="card-title">Total Packets Dropped</div>
+        </div>
+    </div>
+
+    <div class="charts">
+        <div class="chart-container">
+            <h2>Top Attackers</h2>
+            <canvas id="attackersChart"></canvas>
+        </div>
+        <div class="chart-container">
+            <h2>Drops per Second (Last 5 min)</h2>
+            <canvas id="dropsChart"></canvas>
+        </div>
+    </div>
+
+    <h2>Recent Alerts</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Rule</th>
+                <th>Source IP</th>
+                <th>Severity</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody id="alerts-body">
+        </tbody>
+    </table>
+
+    <script src="/static/chart.js"></script>
+    <script>
+        // Setup Chart.js defaults for dark theme
+        Chart.defaults.color = '#aaaaaa';
+        Chart.defaults.font.size = 14;
+
+        let attackersChart = new Chart(document.getElementById('attackersChart'), {
+            type: 'bar',
+            data: { labels: [], datasets: [{ label: 'Events', data: [], backgroundColor: '#cf6679' }] },
+            options: { responsive: true }
+        });
+
+        let dropsChart = new Chart(document.getElementById('dropsChart'), {
+            type: 'line',
+            data: { labels: [], datasets: [{ label: 'Drops/sec', data: [], borderColor: '#03dac6', tension: 0.1 }] },
+            options: { responsive: true, scales: { x: { display: false }, y: { beginAtZero: true } } }
+        });
+
+        async function updateDashboard() {
+            try {
+                // Update Summary
+                let res = await fetch('/api/summary');
+                let summary = await res.json();
+                document.getElementById('val-events').textContent = summary.total_events;
+                document.getElementById('val-alerts').textContent = summary.total_alerts;
+                document.getElementById('val-blocks').textContent = summary.active_blocks;
+                document.getElementById('val-drops').textContent = summary.total_drops;
+
+                // Update Top Attackers
+                res = await fetch('/api/top_attackers');
+                let attackers = await res.json();
+                attackersChart.data.labels = attackers.map(a => a.src_ip);
+                attackersChart.data.datasets[0].data = attackers.map(a => a.count);
+                attackersChart.update();
+
+                // Update Drops/sec
+                res = await fetch('/api/drops_per_sec');
+                let drops = await res.json();
+                dropsChart.data.labels = drops.map(d => new Date(d.ts * 1000).toLocaleTimeString());
+                dropsChart.data.datasets[0].data = drops.map(d => d.pps);
+                dropsChart.update();
+
+                // Update Alerts Table
+                res = await fetch('/api/alerts');
+                let alerts = await res.json();
+                let tbody = document.getElementById('alerts-body');
+                tbody.innerHTML = ''; // safe to clear
+                alerts.forEach(a => {
+                    let tr = document.createElement('tr');
+                    
+                    let tdTs = document.createElement('td'); tdTs.textContent = a.ts; tr.appendChild(tdTs);
+                    let tdRule = document.createElement('td'); tdRule.textContent = a.rule; tr.appendChild(tdRule);
+                    let tdIp = document.createElement('td'); tdIp.textContent = a.src_ip; tr.appendChild(tdIp);
+                    
+                    let tdSev = document.createElement('td'); 
+                    tdSev.textContent = a.severity; 
+                    if(a.severity === 'high') tdSev.className = 'severity-high';
+                    tr.appendChild(tdSev);
+                    
+                    let tdAct = document.createElement('td'); 
+                    tdAct.textContent = a.action; 
+                    if(a.action === 'block') tdAct.className = 'action-block';
+                    tr.appendChild(tdAct);
+                    
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                console.error("Dashboard update failed", err);
+            }
+        }
+
+        // Auto-refresh every 2 seconds
+        setInterval(updateDashboard, 2000);
+        updateDashboard();
+    </script>
+</body>
+</html>
