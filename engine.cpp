@@ -8,6 +8,8 @@
 
 #include <atomic>
 #include <cerrno>
+#include <unistd.h>
+#include <sys/stat.h>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -241,19 +243,43 @@ private:
 /* ---------- XdpEngine: load + attach, with automatic detach ---------- */
 class XdpEngine {
 public:
-    XdpEngine(const std::string& obj_path, const std::string& ifname) {
+    XdpEngine(const std::string& obj_path, const std::string& ifname, bool fresh) {
         const unsigned ifindex = if_nametoindex(ifname.c_str());   // "eth0" -> e.g. 2
         if (ifindex == 0) throw std::runtime_error("no such interface: " + ifname);
 
         obj_.reset(bpf_object__open_file(obj_path.c_str(), nullptr));  // (1) parse the ELF file
         if (!obj_) throw std::runtime_error("open failed: " + std::string{std::strerror(errno)});
 
-        if (int err = bpf_object__load(obj_.get()))                    // (2) create maps, verify, JIT
-            throw std::runtime_error("load failed (verifier?): " + std::string{std::strerror(-err)});
-
-        bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_firewall");
         bpf_map* allowed  = bpf_object__find_map_by_name(obj_.get(), "allowed_ips");
         bpf_map* blocked  = bpf_object__find_map_by_name(obj_.get(), "blocked_ips");
+        if (!allowed || !blocked) throw std::runtime_error("missing map in object");
+
+        // Trade-off: Persisting maps across restarts avoids dropping state (e.g. active blocks and allowlists
+        // are remembered), but if the system crashes or bugs exist, stale entries might get stuck indefinitely.
+        if (fresh) {
+            unlink("/sys/fs/bpf/xdp_engine_allowed");
+            unlink("/sys/fs/bpf/xdp_engine_blocked");
+        }
+        
+        int fd_allow = bpf_obj_get("/sys/fs/bpf/xdp_engine_allowed");
+        if (fd_allow >= 0) {
+            bpf_map__reuse_fd(allowed, fd_allow);
+            close(fd_allow);
+        }
+        
+        int fd_block = bpf_obj_get("/sys/fs/bpf/xdp_engine_blocked");
+        if (fd_block >= 0) {
+            bpf_map__reuse_fd(blocked, fd_block);
+            close(fd_block);
+        }
+
+        if (int err = bpf_object__load(obj_.get()))                    // (2) create maps, verify, JIT
+            throw std::runtime_error("load failed (verifier?): " + std::string{std::strerror(-err)});
+        
+        bpf_map__pin(allowed, "/sys/fs/bpf/xdp_engine_allowed");
+        bpf_map__pin(blocked, "/sys/fs/bpf/xdp_engine_blocked");
+
+        bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_firewall");
         bpf_map* stats    = bpf_object__find_map_by_name(obj_.get(), "stats");
         bpf_map* events   = bpf_object__find_map_by_name(obj_.get(), "events");
         bpf_map* limits   = bpf_object__find_map_by_name(obj_.get(), "limits");
@@ -382,12 +408,15 @@ int main(int argc, char** argv) {
     }
     std::unordered_set<std::uint32_t> allow{*parse_ipv4("127.0.0.1")};
     bool dry_run = false;
+    bool fresh = false;
     for (int i = 4; i < argc; ++i) {
         if (std::string_view{argv[i]} == "--allow" && i + 1 < argc) {
             if (auto ip = parse_ipv4(argv[i + 1])) allow.insert(*ip);
             i++;
         } else if (std::string_view{argv[i]} == "--dry-run") {
             dry_run = true;
+        } else if (std::string_view{argv[i]} == "--fresh") {
+            fresh = true;
         }
     }
 
@@ -401,7 +430,7 @@ int main(int argc, char** argv) {
         Storage storage{"engine.db"};
         RuleEngine rule_engine{"rules.yaml"};
 
-        XdpEngine engine{argv[2], argv[1]};
+        XdpEngine engine{argv[2], argv[1], fresh};
         BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), engine.proto_stats_fd(), allow};
         
         // BlockCallback returns: 0 = ok, 1 = skipped (allowlist/dry-run), -1 = failed
