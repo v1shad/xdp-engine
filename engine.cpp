@@ -5,6 +5,7 @@
 #include <bpf/bpf.h>        // bpf_map_update_elem, bpf_map_lookup_elem, ... (syscall wrappers)
 #include <bpf/libbpf.h>     // bpf_object__open_file, bpf_program__attach_xdp, ...
 #include "common.h"
+#include "http_detector.h"
 
 #include <atomic>
 #include <cerrno>
@@ -478,6 +479,8 @@ int main(int argc, char** argv) {
 
         SshDetector detector{argv[3], on_event};
         std::jthread watcher{[&detector](std::stop_token st) { detector.run(st); }};
+        
+        HttpDetector http_detector{"/tmp/fake_access.log", rule_engine, on_event};
 
         RingBufPtr rb{ring_buffer__new(engine.events_fd(), handle_event, &on_event, nullptr)};
         if (!rb) throw std::runtime_error("failed to create ring buffer");

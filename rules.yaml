@@ -1,5 +1,5 @@
 - name: SSH_BRUTE_FORCE
-  approval: true
+  type: threshold
   match_type: ssh_failed
   threshold: 5
   window_seconds: 60
@@ -7,3 +7,45 @@
   mitre: T1110
   action: block
   block_seconds: 600
+
+- name: SCAN_THEN_BRUTE
+  type: sequence
+  steps: [port_scan, ssh_failed]
+  within_seconds: 300
+  severity: critical
+  mitre: [T1046, T1110]
+  action: block
+  block_seconds: 3600
+
+- name: HTTP_TRAVERSAL
+  type: threshold
+  match_type: http_traversal
+  threshold: 1
+  window_seconds: 60
+  severity: high
+  mitre: T1190
+  action: block
+  block_seconds: 600
+  patterns: ["\\.\\./", "%2e%2e"]
+
+- name: HTTP_SQLI
+  type: threshold
+  match_type: http_sqli
+  threshold: 1
+  window_seconds: 60
+  severity: critical
+  mitre: T1190
+  action: block
+  block_seconds: 600
+  patterns: ["union.*select", "' or 1=1"]
+
+- name: HTTP_SCANNER
+  type: threshold
+  match_type: http_scanner
+  threshold: 1
+  window_seconds: 60
+  severity: medium
+  mitre: T1595
+  action: block
+  block_seconds: 600
+  patterns: ["sqlmap", "nikto", "nmap"]

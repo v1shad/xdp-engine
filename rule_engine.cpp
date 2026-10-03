@@ -7,16 +7,30 @@ RuleEngine::RuleEngine(const std::string& yaml_path) {
     for (const auto& node : config) {
         RuleDef r;
         r.name = node["name"].as<std::string>();
-        r.match_type = node["match_type"].as<std::string>();
-        r.threshold = node["threshold"].as<std::size_t>();
-        r.window = std::chrono::seconds(node["window_seconds"].as<int>());
+        if (node["type"]) r.type = node["type"].as<std::string>();
+        
+        if (r.type == "threshold") {
+            r.match_type = node["match_type"].as<std::string>();
+            r.threshold = node["threshold"].as<std::size_t>();
+            r.window = std::chrono::seconds(node["window_seconds"].as<int>());
+        } else if (r.type == "sequence") {
+            r.steps = node["steps"].as<std::vector<std::string>>();
+            r.window = std::chrono::seconds(node["within_seconds"].as<int>());
+        }
+        
         r.severity = node["severity"].as<std::string>();
-        r.mitre = node["mitre"].as<std::string>();
+        
+        if (node["mitre"].IsSequence()) {
+            r.mitre = node["mitre"].as<std::vector<std::string>>();
+        } else {
+            r.mitre.push_back(node["mitre"].as<std::string>());
+        }
+        
         r.action = node["action"].as<std::string>();
         r.block_seconds = node["block_seconds"].as<int>();
-        if (node["approval"]) {
-            r.requires_approval = node["approval"].as<bool>();
-        }
+        if (node["approval"]) r.requires_approval = node["approval"].as<bool>();
+        if (node["patterns"]) r.patterns = node["patterns"].as<std::vector<std::string>>();
+        
         rules_.push_back(r);
     }
 }
@@ -36,29 +50,74 @@ std::vector<Alert> RuleEngine::process(const Event& e) {
     auto now = std::chrono::steady_clock::now();
 
     for (const auto& rule : rules_) {
-        if (rule.match_type == e.type) {
-            auto& ip_map = windows_[rule.name];
-            auto& attempts = ip_map[e.src_ip];
-            attempts.push_back(now);
+        if (rule.type == "threshold") {
+            if (rule.match_type == e.type) {
+                auto& ip_map = windows_[rule.name];
+                auto& attempts = ip_map[e.src_ip];
+                attempts.push_back(now);
 
-            while (!attempts.empty() && now - attempts.front() > rule.window) {
-                attempts.pop_front();
+                while (!attempts.empty() && now - attempts.front() > rule.window) {
+                    attempts.pop_front();
+                }
+
+                if (attempts.size() >= rule.threshold) {
+                    Alert a;
+                    a.rule = rule.name;
+                    a.src_ip = e.src_ip;
+                    a.severity = rule.severity;
+                    if (!rule.mitre.empty()) {
+                        a.mitre = rule.mitre[0];
+                        for (size_t i = 1; i < rule.mitre.size(); ++i) a.mitre += "," + rule.mitre[i];
+                    }
+                    a.action = rule.action;
+                    a.block_seconds = rule.block_seconds;
+                    a.ts_iso = e.ts_iso;
+                    a.requires_approval = rule.requires_approval;
+                    generated_alerts.push_back(a);
+                    
+                    ip_map.erase(e.src_ip);
+                }
             }
-
-            if (attempts.size() >= rule.threshold) {
+        } else if (rule.type == "sequence") {
+            auto& state = seq_states_[rule.name][e.src_ip];
+            if (state.next_step_idx == 0) {
+                // Not in sequence yet, check if this is the first step
+                if (!rule.steps.empty() && rule.steps[0] == e.type) {
+                    state.next_step_idx = 1;
+                    state.start_time = now;
+                }
+            } else {
+                // In sequence, check expiration
+                if (now - state.start_time > rule.window) {
+                    // Expired, reset and check if it's the first step again
+                    state.next_step_idx = 0;
+                    if (!rule.steps.empty() && rule.steps[0] == e.type) {
+                        state.next_step_idx = 1;
+                        state.start_time = now;
+                    }
+                } else if (rule.steps[state.next_step_idx] == e.type) {
+                    // Next step matched
+                    state.next_step_idx++;
+                }
+            }
+            
+            // Check if sequence completed
+            if (state.next_step_idx > 0 && state.next_step_idx == rule.steps.size()) {
                 Alert a;
                 a.rule = rule.name;
                 a.src_ip = e.src_ip;
                 a.severity = rule.severity;
-                a.mitre = rule.mitre;
+                if (!rule.mitre.empty()) {
+                    a.mitre = rule.mitre[0];
+                    for (size_t i = 1; i < rule.mitre.size(); ++i) a.mitre += "," + rule.mitre[i];
+                }
                 a.action = rule.action;
                 a.block_seconds = rule.block_seconds;
                 a.ts_iso = e.ts_iso;
                 a.requires_approval = rule.requires_approval;
                 generated_alerts.push_back(a);
                 
-                // Clear the window so we don't alert again on the very next event
-                ip_map.erase(e.src_ip);
+                seq_states_[rule.name].erase(e.src_ip);
             }
         }
     }

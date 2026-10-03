@@ -18,8 +18,8 @@ xdp_prog.bpf.o: xdp_prog.bpf.c
 	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
 
 # Stage 2: C++20 -> native executable, linked against libbpf and yaml-cpp
-engine: engine.cpp rule_engine.cpp rule_engine.h storage.cpp storage.h playbook_runner.cpp playbook_runner.h notifier.cpp notifier.h
-	$(CXX) -std=c++20 -O2 -Wall -Wextra -pthread engine.cpp rule_engine.cpp storage.cpp playbook_runner.cpp notifier.cpp -o $@ -lbpf -lelf -lz -lyaml-cpp -lsqlite3 -lcurl
+engine: engine.cpp rule_engine.cpp rule_engine.h storage.cpp storage.h playbook_runner.cpp playbook_runner.h notifier.cpp notifier.h http_detector.cpp http_detector.h
+	$(CXX) -std=c++20 -O2 -Wall -Wextra -pthread engine.cpp rule_engine.cpp storage.cpp playbook_runner.cpp notifier.cpp http_detector.cpp -o $@ -lbpf -lelf -lz -lyaml-cpp -lsqlite3 -lcurl
 
 clean:
 	rm -f xdp_prog.bpf.o engine
