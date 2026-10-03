@@ -261,24 +261,28 @@ public:
             unlink("/sys/fs/bpf/xdp_engine/blocked_ips");
         }
         
+        bool allow_exists = false, block_exists = false;
+        
         int fd_allow = bpf_obj_get("/sys/fs/bpf/xdp_engine/allowed_ips");
         if (fd_allow >= 0) {
             bpf_map__reuse_fd(allowed, fd_allow);
             close(fd_allow);
+            allow_exists = true;
         }
         
         int fd_block = bpf_obj_get("/sys/fs/bpf/xdp_engine/blocked_ips");
         if (fd_block >= 0) {
             bpf_map__reuse_fd(blocked, fd_block);
             close(fd_block);
+            block_exists = true;
         }
 
         if (int err = bpf_object__load(obj_.get()))                    // (2) create maps, verify, JIT
             throw std::runtime_error("load failed (verifier?): " + std::string{std::strerror(-err)});
         
         mkdir("/sys/fs/bpf/xdp_engine", 0755);
-        bpf_map__pin(allowed, "/sys/fs/bpf/xdp_engine/allowed_ips");
-        bpf_map__pin(blocked, "/sys/fs/bpf/xdp_engine/blocked_ips");
+        if (!allow_exists) bpf_map__pin(allowed, "/sys/fs/bpf/xdp_engine/allowed_ips");
+        if (!block_exists) bpf_map__pin(blocked, "/sys/fs/bpf/xdp_engine/blocked_ips");
 
         bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_firewall");
         bpf_map* stats    = bpf_object__find_map_by_name(obj_.get(), "stats");
