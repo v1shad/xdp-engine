@@ -60,6 +60,14 @@ void PlaybookRunner::execute(Alert& alert) {
                 alert.label = "unknown";
             }
         } else if (step == "block") {
+            if (alert.requires_approval) {
+                std::lock_guard<std::mutex> lock(approval_mutex_);
+                int id = next_approval_id_++;
+                pending_approvals_[id] = {alert, now + std::chrono::minutes(2)};
+                std::cout << "[PLAYBOOK] " << alert.rule << " step=" << step << " result=pending (id=" << id << ")" << std::endl;
+                break; // Pause playbook
+            }
+
             // Check rate cap
             while (!recent_blocks_.empty() && (now - recent_blocks_.front()) > std::chrono::seconds(60)) {
                 recent_blocks_.pop_front();
@@ -89,5 +97,63 @@ void PlaybookRunner::execute(Alert& alert) {
         }
         
         std::cout << "[PLAYBOOK] " << alert.rule << " step=" << step << " result=" << result << std::endl;
+    }
+}
+
+void PlaybookRunner::approve(int id) {
+    Alert alert;
+    {
+        std::lock_guard<std::mutex> lock(approval_mutex_);
+        auto it = pending_approvals_.find(id);
+        if (it == pending_approvals_.end()) {
+            std::cout << "[PLAYBOOK] Invalid or expired approval id " << id << std::endl;
+            return;
+        }
+        alert = it->second.alert;
+        pending_approvals_.erase(it);
+    }
+    std::cout << "[PLAYBOOK] approved block for " << alert.src_ip << std::endl;
+
+    if (block_cb_ && block_cb_(alert.src_ip, alert.rule, alert.block_seconds) == 0) {
+        if (record_cb_) {
+            ActionRecord act{alert.ts_iso, alert.src_ip, "block", alert.rule};
+            record_cb_(act);
+        }
+    }
+}
+
+void PlaybookRunner::deny(int id) {
+    Alert alert;
+    {
+        std::lock_guard<std::mutex> lock(approval_mutex_);
+        auto it = pending_approvals_.find(id);
+        if (it == pending_approvals_.end()) {
+            std::cout << "[PLAYBOOK] Invalid or expired approval id " << id << std::endl;
+            return;
+        }
+        alert = it->second.alert;
+        pending_approvals_.erase(it);
+    }
+    std::cout << "[PLAYBOOK] denied block for " << alert.src_ip << std::endl;
+    if (record_cb_) {
+        ActionRecord act{alert.ts_iso, alert.src_ip, "deny", alert.rule};
+        record_cb_(act);
+    }
+}
+
+void PlaybookRunner::check_expiries() {
+    std::lock_guard<std::mutex> lock(approval_mutex_);
+    auto now = std::chrono::steady_clock::now();
+    for (auto it = pending_approvals_.begin(); it != pending_approvals_.end(); ) {
+        if (now > it->second.expiry) {
+            std::cout << "[PLAYBOOK] auto-denied block for " << it->second.alert.src_ip << std::endl;
+            if (record_cb_) {
+                ActionRecord act{it->second.alert.ts_iso, it->second.alert.src_ip, "auto-deny", it->second.alert.rule};
+                record_cb_(act);
+            }
+            it = pending_approvals_.erase(it);
+        } else {
+            ++it;
+        }
     }
 }

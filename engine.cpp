@@ -408,14 +408,15 @@ int main(int argc, char** argv) {
 
         RingBufPtr rb{ring_buffer__new(engine.events_fd(), handle_event, &on_event, nullptr)};
         if (!rb) throw std::runtime_error("failed to create ring buffer");
-        std::jthread rb_poller{[&rb](std::stop_token st) {
+        std::jthread rb_poller{[&rb, &runner](std::stop_token st) {
             while (!st.stop_requested()) {
                 ring_buffer__poll(rb.get(), 100);
+                runner.check_expiries();
             }
         }};
 
         log("[engine] XDP attached to " + std::string{argv[1]} +
-        ". Commands: allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | alerts | quit");
+        ". Commands: allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | alerts | approve <id> | deny <id> | quit");
 
         std::string line;
         while (g_running && std::getline(std::cin, line)) {
@@ -426,6 +427,12 @@ int main(int argc, char** argv) {
             else if (cmd == "list")  blocklist.print_blocked();
             else if (cmd == "stats") blocklist.print_stats();
             else if (cmd == "alerts") storage.print_last_alerts(10);
+            else if (cmd == "approve") {
+                try { runner.approve(std::stoi(arg)); } catch (...) {}
+            }
+            else if (cmd == "deny") {
+                try { runner.deny(std::stoi(arg)); } catch (...) {}
+            }
             else if (cmd == "block" || cmd == "unblock" || cmd == "allow" || cmd == "unallow") {
                 if (auto ip = parse_ipv4(arg)) {
                     if (cmd == "block") blocklist.block(*ip, "manual");

@@ -14,6 +14,9 @@ RuleEngine::RuleEngine(const std::string& yaml_path) {
         r.mitre = node["mitre"].as<std::string>();
         r.action = node["action"].as<std::string>();
         r.block_seconds = node["block_seconds"].as<int>();
+        if (node["approval"]) {
+            r.requires_approval = node["approval"].as<bool>();
+        }
         rules_.push_back(r);
     }
 }
@@ -51,6 +54,7 @@ std::vector<Alert> RuleEngine::process(const Event& e) {
                 a.action = rule.action;
                 a.block_seconds = rule.block_seconds;
                 a.ts_iso = e.ts_iso;
+                a.requires_approval = rule.requires_approval;
                 generated_alerts.push_back(a);
                 
                 // Clear the window so we don't alert again on the very next event

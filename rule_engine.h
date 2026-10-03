@@ -19,6 +19,7 @@ struct Alert {
     int block_seconds;
     std::string ts_iso;
     std::string label; // Added for enrichment
+    bool requires_approval = false;
     
     nlohmann::json to_json() const {
         return nlohmann::json{
@@ -29,7 +30,8 @@ struct Alert {
             {"action", action},
             {"block_seconds", block_seconds},
             {"ts_iso", ts_iso},
-            {"label", label}
+            {"label", label},
+            {"requires_approval", requires_approval}
         };
     }
 };
@@ -43,6 +45,7 @@ struct RuleDef {
     std::string mitre;
     std::string action;
     int block_seconds;
+    bool requires_approval = false;
 };
 
 class RuleEngine {
