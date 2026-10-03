@@ -62,6 +62,14 @@ struct {
     __type(value, __u32);
 } limits SEC(".maps");
 
+/* ---------- MAP 7: protocol counters ---------- */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 4);            // 0=TCP, 1=UDP, 2=ICMP, 3=Other
+    __type(key, __u32);
+    __type(value, __u64);
+} proto_stats SEC(".maps");
+
 /* Helper: increment stats[idx]. __always_inline because old BPF disallowed real function
  calls; the compiler must paste this body into the caller. */
  static __always_inline void bump(__u32 idx)
@@ -70,6 +78,13 @@ struct {
      if (counter)        // MANDATORY NULL CHECK: the verifier rejects the program if you
          (*counter)++;   // dereference the pointer without checking it. No atomic needed:
  }                       // per-CPU slots are only touched by the CPU that owns them.
+ 
+ static __always_inline void bump_proto(__u32 idx)
+ {
+     __u64 *counter = bpf_map_lookup_elem(&proto_stats, &idx);
+     if (counter)
+         (*counter)++;
+ }
 
  SEC("xdp")                                  // marks this function as an XDP program
  int xdp_firewall(struct xdp_md *ctx)        // ctx holds two numbers: address of first byte
@@ -98,6 +113,11 @@ struct {
 
      __u32 src_ip = ip->saddr;                      // source address; stays in network byte order, which
      // is what user space stores as key (inet_pton output)
+     
+     if (ip->protocol == IPPROTO_TCP) bump_proto(0);
+     else if (ip->protocol == IPPROTO_UDP) bump_proto(1);
+     else if (ip->protocol == IPPROTO_ICMP) bump_proto(2);
+     else bump_proto(3);
 
      /* ---- Check Allowlist FIRST ---- */
      __u8 *allowed = bpf_map_lookup_elem(&allowed_ips, &src_ip);

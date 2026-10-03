@@ -24,7 +24,7 @@ Storage::Storage(const std::string& db_path) {
     sqlite3_prepare_v2(db_.get(), "SELECT ts, rule, src_ip, action FROM alerts ORDER BY id DESC LIMIT ?", -1, &stmt, nullptr);
     get_alerts_stmt_.reset(stmt);
     
-    sqlite3_prepare_v2(db_.get(), "INSERT INTO metrics(ts, dropped, passed) VALUES(?, ?, ?)", -1, &stmt, nullptr);
+    sqlite3_prepare_v2(db_.get(), "INSERT INTO metrics(ts, dropped, passed, tcp, udp, icmp, other) VALUES(?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
     insert_metrics_stmt_.reset(stmt);
     
     sqlite3_prepare_v2(db_.get(), "DELETE FROM metrics WHERE ts < ?", -1, &stmt, nullptr);
@@ -47,7 +47,7 @@ void Storage::exec_schema() {
             ts TEXT, src_ip TEXT, action TEXT, reason TEXT
         );
         CREATE TABLE IF NOT EXISTS metrics (
-            ts INTEGER, dropped INTEGER, passed INTEGER
+            ts INTEGER, dropped INTEGER, passed INTEGER, tcp INTEGER, udp INTEGER, icmp INTEGER, other INTEGER
         );
     )";
     char* err = nullptr;
@@ -115,7 +115,7 @@ void Storage::print_last_alerts(int limit) {
     }
 }
 
-void Storage::insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed) {
+void Storage::insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed, uint64_t tcp, uint64_t udp, uint64_t icmp, uint64_t other) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
     // Insert new metrics
@@ -123,6 +123,10 @@ void Storage::insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed) {
     sqlite3_bind_int64(insert_metrics_stmt_.get(), 1, ts);
     sqlite3_bind_int64(insert_metrics_stmt_.get(), 2, dropped);
     sqlite3_bind_int64(insert_metrics_stmt_.get(), 3, passed);
+    sqlite3_bind_int64(insert_metrics_stmt_.get(), 4, tcp);
+    sqlite3_bind_int64(insert_metrics_stmt_.get(), 5, udp);
+    sqlite3_bind_int64(insert_metrics_stmt_.get(), 6, icmp);
+    sqlite3_bind_int64(insert_metrics_stmt_.get(), 7, other);
     if (sqlite3_step(insert_metrics_stmt_.get()) != SQLITE_DONE) {
         std::cerr << "[error] metrics insert failed: " << sqlite3_errmsg(db_.get()) << "\n";
     }

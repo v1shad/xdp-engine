@@ -84,8 +84,8 @@ constexpr std::chrono::seconds DEFAULT_BLOCK_DURATION{600}; // 10 minutes
 /* ---------- BlockList: the C++ face of the kernel maps ---------- */
 class BlockList {
 public:
-    BlockList(int allowed_fd, int blocked_fd, int stats_fd, const std::unordered_set<std::uint32_t>& allow)
-    : allowed_fd_{allowed_fd}, blocked_fd_{blocked_fd}, stats_fd_{stats_fd},
+    BlockList(int allowed_fd, int blocked_fd, int stats_fd, int proto_stats_fd, const std::unordered_set<std::uint32_t>& allow)
+    : allowed_fd_{allowed_fd}, blocked_fd_{blocked_fd}, stats_fd_{stats_fd}, proto_stats_fd_{proto_stats_fd},
       sweeper_{[this](std::stop_token st) { sweep_loop(st); }} {
         for (std::uint32_t ip : allow) {
             allow_ip(ip);
@@ -183,19 +183,30 @@ public:
     void print_stats() const {
         log("  packets dropped=" + std::to_string(read_stat(0)) +
         "  passed=" + std::to_string(read_stat(1)));
+        log("  protocols: TCP=" + std::to_string(read_proto_stat(0)) +
+        " UDP=" + std::to_string(read_proto_stat(1)) +
+        " ICMP=" + std::to_string(read_proto_stat(2)) +
+        " Other=" + std::to_string(read_proto_stat(3)));
     }
 
-    std::pair<std::uint64_t, std::uint64_t> get_stats() const {
-        return {read_stat(0), read_stat(1)};
+    std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t> get_stats() const {
+        return {read_stat(0), read_stat(1), read_proto_stat(0), read_proto_stat(1), read_proto_stat(2), read_proto_stat(3)};
     }
 
 private:
-    // A PERCPU map returns one value PER CPU, so we sum them.
     std::uint64_t read_stat(std::uint32_t idx) const {
         const int ncpu = libbpf_num_possible_cpus();
         if (ncpu <= 0) return 0;
         std::vector<std::uint64_t> per_cpu(static_cast<std::size_t>(ncpu));
         if (bpf_map_lookup_elem(stats_fd_, &idx, per_cpu.data()) != 0) return 0;
+        return std::accumulate(per_cpu.begin(), per_cpu.end(), std::uint64_t{0});
+    }
+    
+    std::uint64_t read_proto_stat(std::uint32_t idx) const {
+        const int ncpu = libbpf_num_possible_cpus();
+        if (ncpu <= 0) return 0;
+        std::vector<std::uint64_t> per_cpu(static_cast<std::size_t>(ncpu));
+        if (bpf_map_lookup_elem(proto_stats_fd_, &idx, per_cpu.data()) != 0) return 0;
         return std::accumulate(per_cpu.begin(), per_cpu.end(), std::uint64_t{0});
     }
 
@@ -223,7 +234,7 @@ private:
         }
     }
 
-    int allowed_fd_, blocked_fd_, stats_fd_;
+    int allowed_fd_, blocked_fd_, stats_fd_, proto_stats_fd_;
     std::jthread sweeper_;
 };
 
@@ -246,13 +257,15 @@ public:
         bpf_map* stats    = bpf_object__find_map_by_name(obj_.get(), "stats");
         bpf_map* events   = bpf_object__find_map_by_name(obj_.get(), "events");
         bpf_map* limits   = bpf_object__find_map_by_name(obj_.get(), "limits");
-        if (!prog || !allowed || !blocked || !stats || !events || !limits) throw std::runtime_error("program/map not found in object");
+        bpf_map* pstats   = bpf_object__find_map_by_name(obj_.get(), "proto_stats");
+        if (!prog || !allowed || !blocked || !stats || !events || !limits || !pstats) throw std::runtime_error("program/map not found in object");
 
         allowed_fd_ = bpf_map__fd(allowed);
         blocked_fd_ = bpf_map__fd(blocked);       // integer handles for the bpf() syscall
         stats_fd_   = bpf_map__fd(stats);
         events_fd_  = bpf_map__fd(events);
         limits_fd_  = bpf_map__fd(limits);
+        proto_stats_fd_ = bpf_map__fd(pstats);
         
         // Write default limit
         set_limit(200);
@@ -264,6 +277,7 @@ public:
     int blocked_fd() const { return blocked_fd_; }
     int stats_fd()   const { return stats_fd_; }
     int events_fd()  const { return events_fd_; }
+    int proto_stats_fd() const { return proto_stats_fd_; }
     
     void set_limit(std::uint32_t limit) {
         std::uint32_t zero = 0;
@@ -277,7 +291,7 @@ public:
 private:
     ObjPtr  obj_;      // declared first => destroyed LAST (link must go before the object)
     LinkPtr link_;     // destroyed first => XDP program detaches from the interface
-    int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1}, events_fd_{-1}, limits_fd_{-1};
+    int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1}, events_fd_{-1}, limits_fd_{-1}, proto_stats_fd_{-1};
 };
 
 /* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
@@ -388,7 +402,7 @@ int main(int argc, char** argv) {
         RuleEngine rule_engine{"rules.yaml"};
 
         XdpEngine engine{argv[2], argv[1]};
-        BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), allow};
+        BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), engine.proto_stats_fd(), allow};
         
         // BlockCallback returns: 0 = ok, 1 = skipped (allowlist/dry-run), -1 = failed
         PlaybookRunner::BlockCallback block_cb = [&](const std::string& ip_str, const std::string& rule, int seconds) -> int {
@@ -444,10 +458,10 @@ int main(int argc, char** argv) {
                     break; // stop requested
                 }
                 
-                auto [dropped, passed] = blocklist.get_stats();
+                auto [dropped, passed, tcp, udp, icmp, other] = blocklist.get_stats();
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
-                storage.insert_metrics(ts.tv_sec, dropped, passed);
+                storage.insert_metrics(ts.tv_sec, dropped, passed, tcp, udp, icmp, other);
             }
         }};
 
