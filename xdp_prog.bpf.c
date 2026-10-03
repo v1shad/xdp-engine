@@ -6,6 +6,9 @@
 #include <bpf/bpf_endian.h>     // bpf_htons() for byte-order conversion
 #include "common.h"
 
+#include <linux/tcp.h>          // struct tcphdr
+#include <linux/in.h>           // IPPROTO_TCP
+
 /* ---------- MAP 1: allowlist (key = source IPv4, value = boolean dummy) ---------- */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -36,6 +39,28 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);   // 256 KB buffer
 } events SEC(".maps");
+
+struct rate_state_record {
+    __u64 window_start_ns;
+    __u32 count;
+    __u32 pad;
+};
+
+/* ---------- MAP 5: LRU hash for SYN rate limiting ---------- */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 65536);
+    __type(key, __u32);
+    __type(value, struct rate_state_record);
+} rate_state SEC(".maps");
+
+/* ---------- MAP 6: config limits ---------- */
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} limits SEC(".maps");
 
 /* Helper: increment stats[idx]. __always_inline because old BPF disallowed real function
  calls; the compiler must paste this body into the caller. */
@@ -94,12 +119,64 @@ struct {
                  if (e) { // MANDATORY NULL CHECK: verifier rejects without this
                      e->ts_ns = bpf_ktime_get_ns();
                      e->src_ip = src_ip;
-                     e->pad = 0;
+                     e->reason = REASON_BLOCKLIST;
                      e->total_hits = old_hits + 1;
                      bpf_ringbuf_submit(e, 0);
                  }
              }
              return XDP_DROP;                           // verdict: discard now
+         }
+     }
+
+     /* ---- Rate Limiter for TCP SYN ---- */
+     if (ip->protocol == IPPROTO_TCP) {
+         // Verifier check: Ensure IP header length is valid before pointer arithmetic
+         if (ip->ihl < 5) return XDP_PASS;
+         
+         struct tcphdr *tcp = (void *)ip + (ip->ihl * 4);
+         // Verifier check: Ensure TCP header is within packet bounds
+         if ((void *)(tcp + 1) > data_end) {
+             return XDP_PASS;
+         }
+         
+         if (tcp->syn && !tcp->ack) {
+             __u64 now = bpf_ktime_get_ns();
+             struct rate_state_record *rs = bpf_map_lookup_elem(&rate_state, &src_ip);
+             __u32 current_count = 1;
+             
+             if (rs) {
+                 if (now - rs->window_start_ns >= 1000000000ULL) { // 1 second
+                     rs->window_start_ns = now;
+                     rs->count = 1;
+                 } else {
+                     rs->count++;
+                     current_count = rs->count;
+                 }
+             } else {
+                 struct rate_state_record new_rs = {};
+                 new_rs.window_start_ns = now;
+                 new_rs.count = 1;
+                 bpf_map_update_elem(&rate_state, &src_ip, &new_rs, BPF_ANY);
+             }
+             
+             __u32 zero = 0;
+             __u32 *thresh = bpf_map_lookup_elem(&limits, &zero);
+             __u32 limit_val = thresh ? *thresh : 200;
+             
+             if (current_count > limit_val) {
+                 bump(0);
+                 if ((current_count % 64) == 0) {
+                     struct drop_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+                     if (e) {
+                         e->ts_ns = now;
+                         e->src_ip = src_ip;
+                         e->reason = REASON_RATELIMIT;
+                         e->total_hits = current_count;
+                         bpf_ringbuf_submit(e, 0);
+                     }
+                 }
+                 return XDP_DROP;
+             }
          }
      }
 

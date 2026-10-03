@@ -14,8 +14,11 @@ struct block_record {
 struct drop_event {
     __u64 ts_ns;      // Timestamp of the drop
     __u32 src_ip;     // IP address that was dropped
-    __u32 pad;        // Explicit padding for 64-bit alignment
-    __u64 total_hits; // Total times this IP has been dropped
+    __u32 reason;     // Reason for drop (e.g., REASON_BLOCKLIST)
+    __u64 total_hits; // Total times this IP has been dropped (or rate-limit count)
 };
+
+#define REASON_BLOCKLIST 0
+#define REASON_RATELIMIT 1
 
 #endif

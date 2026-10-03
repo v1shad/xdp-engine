@@ -245,12 +245,17 @@ public:
         bpf_map* blocked  = bpf_object__find_map_by_name(obj_.get(), "blocked_ips");
         bpf_map* stats    = bpf_object__find_map_by_name(obj_.get(), "stats");
         bpf_map* events   = bpf_object__find_map_by_name(obj_.get(), "events");
-        if (!prog || !allowed || !blocked || !stats || !events) throw std::runtime_error("program/map not found in object");
+        bpf_map* limits   = bpf_object__find_map_by_name(obj_.get(), "limits");
+        if (!prog || !allowed || !blocked || !stats || !events || !limits) throw std::runtime_error("program/map not found in object");
 
         allowed_fd_ = bpf_map__fd(allowed);
         blocked_fd_ = bpf_map__fd(blocked);       // integer handles for the bpf() syscall
         stats_fd_   = bpf_map__fd(stats);
         events_fd_  = bpf_map__fd(events);
+        limits_fd_  = bpf_map__fd(limits);
+        
+        // Write default limit
+        set_limit(200);
 
         link_.reset(bpf_program__attach_xdp(prog, static_cast<int>(ifindex)));  // (3) hook into NIC
         if (!link_) throw std::runtime_error("attach failed: " + std::string{std::strerror(errno)});
@@ -259,11 +264,20 @@ public:
     int blocked_fd() const { return blocked_fd_; }
     int stats_fd()   const { return stats_fd_; }
     int events_fd()  const { return events_fd_; }
+    
+    void set_limit(std::uint32_t limit) {
+        std::uint32_t zero = 0;
+        if (!map_update(limits_fd_, zero, limit)) {
+            log("[error] Failed to set limit");
+        } else {
+            log("[engine] SYN rate limit set to " + std::to_string(limit) + "/s");
+        }
+    }
 
 private:
     ObjPtr  obj_;      // declared first => destroyed LAST (link must go before the object)
     LinkPtr link_;     // destroyed first => XDP program detaches from the interface
-    int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1}, events_fd_{-1};
+    int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1}, events_fd_{-1}, limits_fd_{-1};
 };
 
 /* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
@@ -330,7 +344,11 @@ static int handle_event(void* ctx, void *data, size_t size) {
     Event e;
     e.ts_iso = time_buf;
     e.source = "xdp_ringbuf";
-    e.type = "packet_dropped";
+    if (ev->reason == REASON_RATELIMIT) {
+        e.type = "rate_limit_exceeded";
+    } else {
+        e.type = "packet_dropped";
+    }
     e.src_ip = ip_to_string(ev->src_ip);
     e.user = "";
     e.severity = 5;
@@ -445,6 +463,9 @@ int main(int argc, char** argv) {
             else if (cmd == "list")  blocklist.print_blocked();
             else if (cmd == "stats") blocklist.print_stats();
             else if (cmd == "alerts") storage.print_last_alerts(10);
+            else if (cmd == "limit") {
+                try { engine.set_limit(std::stoi(arg)); } catch (...) {}
+            }
             else if (cmd == "approve") {
                 try { runner.approve(std::stoi(arg)); } catch (...) {}
             }
