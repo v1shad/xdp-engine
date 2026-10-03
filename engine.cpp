@@ -34,6 +34,7 @@
 #include "rule_engine.h"
 #include "storage.h"
 #include "playbook_runner.h"
+#include "notifier.h"
 
 using namespace std::chrono_literals;   // enables 200ms, 60s literals
 using Clock = std::chrono::steady_clock; // monotonic clock: immune to system time changes
@@ -383,8 +384,9 @@ int main(int argc, char** argv) {
             storage.insert_action(act);
         };
         
+        Notifier notifier;
         PlaybookRunner::NotifyCallback notify_cb = [&](const Alert& a) {
-            log("[NOTIFY] Alert generated for rule: " + a.rule);
+            notifier.notify(a);
         };
         
         PlaybookRunner runner{"playbooks.yaml", "known_ips.txt", block_cb, record_cb, notify_cb};
