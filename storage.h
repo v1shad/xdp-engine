@@ -36,6 +36,7 @@ public:
     void insert_event(const Event& e);
     void insert_alert(const Alert& a);
     void insert_action(const ActionRecord& act);
+    void insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed);
     
     void print_last_alerts(int limit = 10);
 
@@ -48,6 +49,8 @@ private:
     StmtPtr insert_alert_stmt_;
     StmtPtr insert_action_stmt_;
     StmtPtr get_alerts_stmt_;
+    StmtPtr insert_metrics_stmt_;
+    StmtPtr delete_metrics_stmt_;
 };
 
 #endif // STORAGE_H

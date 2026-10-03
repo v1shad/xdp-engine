@@ -185,6 +185,10 @@ public:
         "  passed=" + std::to_string(read_stat(1)));
     }
 
+    std::pair<std::uint64_t, std::uint64_t> get_stats() const {
+        return {read_stat(0), read_stat(1)};
+    }
+
 private:
     // A PERCPU map returns one value PER CPU, so we sum them.
     std::uint64_t read_stat(std::uint32_t idx) const {
@@ -412,6 +416,20 @@ int main(int argc, char** argv) {
             while (!st.stop_requested()) {
                 ring_buffer__poll(rb.get(), 100);
                 runner.check_expiries();
+            }
+        }};
+        
+        std::jthread metrics_poller{[&storage, &blocklist](std::stop_token st) {
+            while (!st.stop_requested()) {
+                std::mutex m; std::unique_lock lk(m);
+                if (std::condition_variable_any().wait_for(lk, st, 2s, []{return false;})) {
+                    break; // stop requested
+                }
+                
+                auto [dropped, passed] = blocklist.get_stats();
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                storage.insert_metrics(ts.tv_sec, dropped, passed);
             }
         }};
 

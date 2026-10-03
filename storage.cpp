@@ -23,10 +23,17 @@ Storage::Storage(const std::string& db_path) {
     
     sqlite3_prepare_v2(db_.get(), "SELECT ts, rule, src_ip, action FROM alerts ORDER BY id DESC LIMIT ?", -1, &stmt, nullptr);
     get_alerts_stmt_.reset(stmt);
+    
+    sqlite3_prepare_v2(db_.get(), "INSERT INTO metrics(ts, dropped, passed) VALUES(?, ?, ?)", -1, &stmt, nullptr);
+    insert_metrics_stmt_.reset(stmt);
+    
+    sqlite3_prepare_v2(db_.get(), "DELETE FROM metrics WHERE ts < ?", -1, &stmt, nullptr);
+    delete_metrics_stmt_.reset(stmt);
 }
 
 void Storage::exec_schema() {
     const char* schema = R"(
+        PRAGMA journal_mode=WAL;
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT, source TEXT, type TEXT, src_ip TEXT, user TEXT, severity INTEGER
@@ -38,6 +45,9 @@ void Storage::exec_schema() {
         CREATE TABLE IF NOT EXISTS actions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             ts TEXT, src_ip TEXT, action TEXT, reason TEXT
+        );
+        CREATE TABLE IF NOT EXISTS metrics (
+            ts INTEGER, dropped INTEGER, passed INTEGER
         );
     )";
     char* err = nullptr;
@@ -103,4 +113,23 @@ void Storage::print_last_alerts(int limit) {
     if (count == 0) {
         std::cout << "  (no alerts found)" << std::endl;
     }
+}
+
+void Storage::insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed) {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    
+    // Insert new metrics
+    sqlite3_reset(insert_metrics_stmt_.get());
+    sqlite3_bind_int64(insert_metrics_stmt_.get(), 1, ts);
+    sqlite3_bind_int64(insert_metrics_stmt_.get(), 2, dropped);
+    sqlite3_bind_int64(insert_metrics_stmt_.get(), 3, passed);
+    if (sqlite3_step(insert_metrics_stmt_.get()) != SQLITE_DONE) {
+        std::cerr << "[error] metrics insert failed: " << sqlite3_errmsg(db_.get()) << "\n";
+    }
+    
+    // Delete old metrics (> 1 hour old)
+    uint64_t cutoff = ts - 3600;
+    sqlite3_reset(delete_metrics_stmt_.get());
+    sqlite3_bind_int64(delete_metrics_stmt_.get(), 1, cutoff);
+    sqlite3_step(delete_metrics_stmt_.get());
 }
