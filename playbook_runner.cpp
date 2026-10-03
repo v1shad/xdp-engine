@@ -42,6 +42,13 @@ void PlaybookRunner::execute(Alert& alert) {
         return; // No playbook for this rule
     }
 
+    auto now = std::chrono::steady_clock::now();
+    std::string run_key = alert.rule + ":" + alert.src_ip;
+    if (last_run_.count(run_key) > 0 && (now - last_run_[run_key]) < std::chrono::seconds(60)) {
+        return; // Cooldown active
+    }
+    last_run_[run_key] = now;
+
     for (const auto& step : it->second) {
         std::string result = "ok";
         
@@ -53,10 +60,24 @@ void PlaybookRunner::execute(Alert& alert) {
                 alert.label = "unknown";
             }
         } else if (step == "block") {
-            if (block_cb_ && !block_cb_(alert.src_ip, alert.rule, alert.block_seconds)) {
-                result = "failed";
-                std::cout << "[PLAYBOOK] " << alert.rule << " step=" << step << " result=" << result << std::endl;
-                break; // Stop on failed block
+            // Check rate cap
+            while (!recent_blocks_.empty() && (now - recent_blocks_.front()) > std::chrono::seconds(60)) {
+                recent_blocks_.pop_front();
+            }
+            if (recent_blocks_.size() >= 20) {
+                std::cout << "[PLAYBOOK] rate cap exceeded, pausing blocks" << std::endl;
+                result = "skipped: ratecap";
+            } else if (block_cb_) {
+                int cb_res = block_cb_(alert.src_ip, alert.rule, alert.block_seconds);
+                if (cb_res == 1) {
+                    result = "skipped: allowlisted/dry-run";
+                } else if (cb_res == -1) {
+                    result = "failed";
+                    std::cout << "[PLAYBOOK] " << alert.rule << " step=" << step << " result=" << result << std::endl;
+                    break; // Stop on failed block
+                } else {
+                    recent_blocks_.push_back(now);
+                }
             }
         } else if (step == "notify") {
             if (notify_cb_) notify_cb_(alert);

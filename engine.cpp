@@ -103,6 +103,11 @@ public:
         return true;
     }
 
+    bool is_allowed(std::uint32_t ip) const {
+        std::uint8_t dummy = 0;
+        return bpf_map_lookup_elem(allowed_fd_, &ip, &dummy) == 0;
+    }
+
     bool unallow_ip(std::uint32_t ip) {
         if (bpf_map_delete_elem(allowed_fd_, &ip) != 0) {
             log("[info] " + ip_to_string(ip) + " was not in allowlist");
@@ -339,9 +344,13 @@ int main(int argc, char** argv) {
         return 2;
     }
     std::unordered_set<std::uint32_t> allow{*parse_ipv4("127.0.0.1")};
-    for (int i = 4; i + 1 < argc; i += 2) {
-        if (std::string_view{argv[i]} == "--allow") {
+    bool dry_run = false;
+    for (int i = 4; i < argc; ++i) {
+        if (std::string_view{argv[i]} == "--allow" && i + 1 < argc) {
             if (auto ip = parse_ipv4(argv[i + 1])) allow.insert(*ip);
+            i++;
+        } else if (std::string_view{argv[i]} == "--dry-run") {
+            dry_run = true;
         }
     }
 
@@ -357,11 +366,17 @@ int main(int argc, char** argv) {
 
         XdpEngine engine{argv[2], argv[1]};
         BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), allow};
-        PlaybookRunner::BlockCallback block_cb = [&](const std::string& ip_str, const std::string& rule, int seconds) {
-            if (auto ip = parse_ipv4(ip_str)) {
-                return blocklist.block(*ip, rule, std::chrono::seconds(seconds));
+        
+        // BlockCallback returns: 0 = ok, 1 = skipped (allowlist/dry-run), -1 = failed
+        PlaybookRunner::BlockCallback block_cb = [&](const std::string& ip_str, const std::string& rule, int seconds) -> int {
+            auto ip = parse_ipv4(ip_str);
+            if (!ip) return -1;
+            if (blocklist.is_allowed(*ip)) return 1; // skipped
+            if (dry_run) {
+                log("[DRY RUN] would block " + ip_str);
+                return 1; // skipped
             }
-            return false;
+            return blocklist.block(*ip, rule, std::chrono::seconds(seconds)) ? 0 : -1;
         };
         
         PlaybookRunner::RecordCallback record_cb = [&](const ActionRecord& act) {
