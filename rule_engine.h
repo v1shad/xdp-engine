@@ -18,6 +18,7 @@ struct Alert {
     std::string action;
     int block_seconds;
     std::string ts_iso;
+    std::string label; // Added for enrichment
     
     nlohmann::json to_json() const {
         return nlohmann::json{
@@ -27,7 +28,8 @@ struct Alert {
             {"mitre", mitre},
             {"action", action},
             {"block_seconds", block_seconds},
-            {"ts_iso", ts_iso}
+            {"ts_iso", ts_iso},
+            {"label", label}
         };
     }
 };

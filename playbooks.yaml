@@ -1,0 +1,5 @@
+SSH_BRUTE_FORCE:
+  - step: enrich
+  - step: block
+  - step: notify
+  - step: record

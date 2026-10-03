@@ -33,6 +33,7 @@
 #include "event.h"
 #include "rule_engine.h"
 #include "storage.h"
+#include "playbook_runner.h"
 
 using namespace std::chrono_literals;   // enables 200ms, 60s literals
 using Clock = std::chrono::steady_clock; // monotonic clock: immune to system time changes
@@ -356,23 +357,32 @@ int main(int argc, char** argv) {
 
         XdpEngine engine{argv[2], argv[1]};
         BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), allow};
+        PlaybookRunner::BlockCallback block_cb = [&](const std::string& ip_str, const std::string& rule, int seconds) {
+            if (auto ip = parse_ipv4(ip_str)) {
+                return blocklist.block(*ip, rule, std::chrono::seconds(seconds));
+            }
+            return false;
+        };
+        
+        PlaybookRunner::RecordCallback record_cb = [&](const ActionRecord& act) {
+            storage.insert_action(act);
+        };
+        
+        PlaybookRunner::NotifyCallback notify_cb = [&](const Alert& a) {
+            log("[NOTIFY] Alert generated for rule: " + a.rule);
+        };
+        
+        PlaybookRunner runner{"playbooks.yaml", "known_ips.txt", block_cb, record_cb, notify_cb};
         
         EventCallback on_event = [&](const Event& e) {
             log("[EVENT] " + e.to_json().dump());
             storage.insert_event(e);
             
             auto alerts = rule_engine.process(e);
-            for (const auto& a : alerts) {
+            for (auto a : alerts) { // By value so we can mutate for enrichment
                 log("[ALERT] " + a.to_json().dump());
                 storage.insert_alert(a);
-                if (a.action == "block") {
-                    if (auto ip = parse_ipv4(a.src_ip)) {
-                        if (blocklist.block(*ip, a.rule, std::chrono::seconds(a.block_seconds))) {
-                            ActionRecord act{a.ts_iso, a.src_ip, "block", a.rule};
-                            storage.insert_action(act);
-                        }
-                    }
-                }
+                runner.execute(a);
             }
         };
 
