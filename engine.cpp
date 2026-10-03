@@ -257,17 +257,17 @@ public:
         // Trade-off: Persisting maps across restarts avoids dropping state (e.g. active blocks and allowlists
         // are remembered), but if the system crashes or bugs exist, stale entries might get stuck indefinitely.
         if (fresh) {
-            unlink("/sys/fs/bpf/xdp_engine_allowed");
-            unlink("/sys/fs/bpf/xdp_engine_blocked");
+            unlink("/sys/fs/bpf/xdp_engine/allowed_ips");
+            unlink("/sys/fs/bpf/xdp_engine/blocked_ips");
         }
         
-        int fd_allow = bpf_obj_get("/sys/fs/bpf/xdp_engine_allowed");
+        int fd_allow = bpf_obj_get("/sys/fs/bpf/xdp_engine/allowed_ips");
         if (fd_allow >= 0) {
             bpf_map__reuse_fd(allowed, fd_allow);
             close(fd_allow);
         }
         
-        int fd_block = bpf_obj_get("/sys/fs/bpf/xdp_engine_blocked");
+        int fd_block = bpf_obj_get("/sys/fs/bpf/xdp_engine/blocked_ips");
         if (fd_block >= 0) {
             bpf_map__reuse_fd(blocked, fd_block);
             close(fd_block);
@@ -276,8 +276,9 @@ public:
         if (int err = bpf_object__load(obj_.get()))                    // (2) create maps, verify, JIT
             throw std::runtime_error("load failed (verifier?): " + std::string{std::strerror(-err)});
         
-        bpf_map__pin(allowed, "/sys/fs/bpf/xdp_engine_allowed");
-        bpf_map__pin(blocked, "/sys/fs/bpf/xdp_engine_blocked");
+        mkdir("/sys/fs/bpf/xdp_engine", 0755);
+        bpf_map__pin(allowed, "/sys/fs/bpf/xdp_engine/allowed_ips");
+        bpf_map__pin(blocked, "/sys/fs/bpf/xdp_engine/blocked_ips");
 
         bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_firewall");
         bpf_map* stats    = bpf_object__find_map_by_name(obj_.get(), "stats");

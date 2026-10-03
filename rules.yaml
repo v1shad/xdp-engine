@@ -1,4 +1,5 @@
 - name: SSH_BRUTE_FORCE
+  approval: true
   match_type: ssh_failed
   threshold: 5
   window_seconds: 60
