@@ -1,6 +1,7 @@
 #!/bin/bash
 set -u
 
+chown root:root /tmp/fake_auth.log /tmp/fake_access.log 2>/dev/null || true
 if ! ip netns list | grep -q "^attacker\b" || ! ip link show veth-host >/dev/null 2>&1; then
     echo "ERROR: Namespace 'attacker' or interface 'veth-host' missing."
     exit 1
@@ -27,6 +28,7 @@ echo ">>> Phase 1: Injecting Hostile Data into Logs"
 
 {
     printf "Failed password for \x00root from 10.10.0.2\n"
+    echo ">>> [Regression] Injecting known crashing UTF-8 sequence..."
     printf "Failed password for \xff\xfe\xfd from 10.10.0.2\n"
     echo "Failed password for \$(id) from 10.10.0.2"
     echo "Failed password for \`id\` from 10.10.0.2"

@@ -432,34 +432,6 @@ static int handle_event(void* ctx, void *data, size_t size) {
     }
     return 0;
 }
-    auto* ev = static_cast<struct drop_event*>(data);
-    
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    char time_buf[32];
-    strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
-
-    Event e;
-    e.ts_iso = time_buf;
-    e.source = "xdp_ringbuf";
-    if (ev->reason == REASON_RATELIMIT) {
-        e.type = "rate_limit_exceeded";
-    } else if (ev->reason == REASON_PORTSCAN) {
-        e.type = "port_scan";
-        e.severity = 4; // Or something
-    } else {
-        e.type = "packet_dropped";
-    }
-    e.src_ip = ip_to_string(ev->src_ip);
-    e.user = "";
-    e.severity = 5;
-    
-    if (ctx) {
-        auto* cb = static_cast<EventCallback*>(ctx);
-        (*cb)(e);
-    }
-    return 0;
-}
 
 int main(int argc, char** argv) {
     if (argc < 4) {
