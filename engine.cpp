@@ -71,11 +71,7 @@ bool map_update(int fd, const K& key, const V& value) {
 }
 
 /* ---------- IP helpers ---------- */
-std::optional<std::uint32_t> parse_ipv4(const std::string& text) {
-    in_addr addr{};
-    if (inet_pton(AF_INET, text.c_str(), &addr) != 1) return std::nullopt; // invalid text
-    return addr.s_addr;                      // already in NETWORK byte order, matching the packet
-}
+#include "utils.h"
 
 std::string ip_to_string(std::uint32_t ip_net) {
     char buf[INET_ADDRSTRLEN]{};

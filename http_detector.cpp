@@ -42,7 +42,6 @@ void HttpDetector::watch_loop(std::stop_token st) {
         
         std::string line;
         while (std::getline(ifs, line)) {
-            if (line.size() > 4096) continue; // cap line length
             process_line(line);
         }
         
@@ -57,6 +56,8 @@ void HttpDetector::watch_loop(std::stop_token st) {
 }
 
 void HttpDetector::process_line(const std::string& line) {
+    if (line.size() > 4096) return; // cap line length
+    
     // Basic nginx combined format
     static std::regex log_rx(R"rx(^(\S+)\s+\S+\s+\S+\s+\[.*?\]\s+"(?:[A-Z]+)\s+(\S+)\s+.*?"\s+\d+\s+\d+\s+"(?:[^"]*)"\s+"([^"]*)")rx");
     std::smatch match;

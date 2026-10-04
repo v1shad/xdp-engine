@@ -1,3 +1,4 @@
+#include <unordered_set>
 #include "rule_engine.h"
 #include <arpa/inet.h>
 #include <iostream>
@@ -8,14 +9,21 @@ RuleEngine::RuleEngine(const std::string& yaml_path) {
         RuleDef r;
         r.name = node["name"].as<std::string>();
         if (node["type"]) r.type = node["type"].as<std::string>();
+        if (node["match_type"]) r.match_type = node["match_type"].as<std::string>();
         
         if (r.type == "threshold") {
-            r.match_type = node["match_type"].as<std::string>();
             r.threshold = node["threshold"].as<std::size_t>();
             r.window = std::chrono::seconds(node["window_seconds"].as<int>());
         } else if (r.type == "sequence") {
             r.steps = node["steps"].as<std::vector<std::string>>();
             r.window = std::chrono::seconds(node["within_seconds"].as<int>());
+            
+            static const std::unordered_set<std::string> valid = {"port_scan", "ssh_failed", "http_traversal", "http_sqli", "http_scanner"};
+            for (const auto& step : r.steps) {
+                if (valid.find(step) == valid.end()) {
+                    throw std::runtime_error("Unknown step: " + step);
+                }
+            }
         }
         
         r.severity = node["severity"].as<std::string>();

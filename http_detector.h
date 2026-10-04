@@ -14,9 +14,10 @@ public:
     HttpDetector(const std::string& log_file, const RuleEngine& rule_engine, EventCallback cb);
     ~HttpDetector();
 
+    void process_line(const std::string& line);
+
 private:
     void watch_loop(std::stop_token st);
-    void process_line(const std::string& line);
 
     std::string log_file_;
     EventCallback cb_;

@@ -26,3 +26,8 @@ engine-cli: engine-cli.cpp
 
 clean:
 	rm -f xdp_prog.bpf.o engine engine-cli
+
+# Stage 3: Unit Tests
+test: tests/test_logic.cpp rule_engine.cpp http_detector.cpp
+	$(CXX) -std=c++20 -O2 -Wall -Wextra -pthread $^ -o test_logic -lgtest -lgtest_main -lyaml-cpp
+	./test_logic
