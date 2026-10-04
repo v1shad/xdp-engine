@@ -31,3 +31,10 @@ clean:
 test: tests/test_logic.cpp rule_engine.cpp http_detector.cpp
 	$(CXX) -std=c++20 -O2 -Wall -Wextra -pthread $^ -o test_logic -lgtest -lgtest_main -lyaml-cpp
 	./test_logic
+
+# Stage 4: Sanitizer build
+ASAN_FLAGS := -fsanitize=address,undefined -g -O1
+engine_asan: engine.cpp rule_engine.cpp storage.cpp playbook_runner.cpp notifier.cpp http_detector.cpp
+	$(CXX) -std=c++20 $(ASAN_FLAGS) -Wall -Wextra -pthread $^ -o $@ -lbpf -lelf -lz -lyaml-cpp -lsqlite3 -lcurl
+
+asan: engine_asan
