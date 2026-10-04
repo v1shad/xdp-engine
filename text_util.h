@@ -65,7 +65,8 @@ inline std::string sanitize_utf8(std::string_view sv) {
         if (!valid) {
             if (out.size() + 3 > 128) break;
             out += "\xEF\xBF\xBD";
-            p++;
+            // advance by len so the whole invalid sequence is replaced by one FFFD
+            p += len;
         } else {
             if (out.size() + len > 128) break;
             if (len == 1) {

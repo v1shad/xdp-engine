@@ -138,3 +138,48 @@ int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+#include "../text_util.h"
+
+TEST(TextUtilTest, ValidAscii) {
+    EXPECT_EQ(sanitize_utf8("hello"), "hello");
+}
+
+TEST(TextUtilTest, ValidMultibyte) {
+    EXPECT_EQ(sanitize_utf8("é 日本"), "é 日本");
+}
+
+TEST(TextUtilTest, LoneFF) {
+    EXPECT_EQ(sanitize_utf8("\xFF"), "\xEF\xBF\xBD");
+}
+
+TEST(TextUtilTest, TruncatedSequence) {
+    EXPECT_EQ(sanitize_utf8("\xE2\x82"), "\xEF\xBF\xBD\xEF\xBF\xBD");
+}
+
+TEST(TextUtilTest, OverlongC0AF) {
+    EXPECT_EQ(sanitize_utf8("\xC0\xAF"), "\xEF\xBF\xBD\xEF\xBF\xBD");
+}
+
+TEST(TextUtilTest, Surrogate) {
+    EXPECT_EQ(sanitize_utf8("\xED\xA0\x80"), "\xEF\xBF\xBD");
+}
+
+TEST(TextUtilTest, NulByte) {
+    EXPECT_EQ(sanitize_utf8(std::string("\x00", 1)), "?");
+}
+
+TEST(TextUtilTest, ControlChars) {
+    EXPECT_EQ(sanitize_utf8("\x01\x1F\x7F\x20"), "??? ");
+}
+
+TEST(TextUtilTest, LengthCap) {
+    std::string long_str(200, 'A');
+    std::string result = sanitize_utf8(long_str);
+    EXPECT_EQ(result.size(), 128);
+    EXPECT_EQ(result, std::string(128, 'A'));
+}
+
+TEST(TextUtilTest, EmptyString) {
+    EXPECT_EQ(sanitize_utf8(""), "");
+}
