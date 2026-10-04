@@ -98,3 +98,31 @@ To demonstrate the full dashboard and engine pipeline to your professor:
    ./demo_attack.sh 10.10.0.2
    ```
 5. Watch the dashboard! The events will rise, then an alert will be generated, the IP will appear in the Top Attackers chart and Recent Alerts table, the Active Blocks will increase, and the Drops chart will spike if you run a ping or hping flood.
+
+## Demo and Red Team
+
+To run a live demonstration of the XDP Intrusion Engine:
+
+1. **Reset the Lab**
+   Run the reset script to tear down and recreate the network namespaces, clear the BPF maps, rotate the logs, and back up the SQLite database:
+   ```bash
+   sudo ./reset_demo.sh
+   ```
+
+2. **Open the Dashboard**
+   Launch the web dashboard in presentation mode:
+   ```bash
+   http://127.0.0.1:5000/?demo=1
+   ```
+
+3. **Run the Attack Scenarios**
+   Run the automated red team script to simulate various attacks:
+   ```bash
+   sudo ./attack_scenarios.sh
+   ```
+   
+   **What to point out during the demo:**
+   - **Stage 1 (10.10.0.2)**: A port scan followed by SSH brute force. Watch the dashboard's Live Feed to see the `port_scan` event upgrade into a `SCAN_THEN_BRUTE` critical alert.
+   - **Stage 2 (10.10.0.3)**: A pure SSH brute force attack. Point out the `SSH_BRUTE_FORCE` alert appearing in the feed.
+   - **Stage 3 (10.10.0.4)**: A volumetric SYN flood. Point out the Health Strip showing XDP actively dropping packets (`RATE_LIMIT`), but note that the IP is intentionally *not* added to the permanent blocklist (to prevent spoofing lockouts).
+   - **Stage 4 (10.10.0.5)**: Malicious HTTP payloads (Path Traversal, SQLi). Watch the Live Feed for the `http_sql_injection` and `http_path_traversal` alerts triggered by the C++ regex engine.
