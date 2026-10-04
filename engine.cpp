@@ -11,6 +11,8 @@
 #include <cerrno>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -87,8 +89,8 @@ constexpr std::chrono::seconds DEFAULT_BLOCK_DURATION{600}; // 10 minutes
 /* ---------- BlockList: the C++ face of the kernel maps ---------- */
 class BlockList {
 public:
-    BlockList(int allowed_fd, int blocked_fd, int stats_fd, int proto_stats_fd, const std::unordered_set<std::uint32_t>& allow)
-    : allowed_fd_{allowed_fd}, blocked_fd_{blocked_fd}, stats_fd_{stats_fd}, proto_stats_fd_{proto_stats_fd},
+    BlockList(int allowed_fd, int blocked_fd, int stats_fd, int proto_stats_fd, const std::unordered_set<std::uint32_t>& allow, Storage* storage = nullptr)
+    : allowed_fd_{allowed_fd}, blocked_fd_{blocked_fd}, stats_fd_{stats_fd}, proto_stats_fd_{proto_stats_fd}, storage_{storage},
       sweeper_{[this](std::stop_token st) { sweep_loop(st); }} {
         for (std::uint32_t ip : allow) {
             allow_ip(ip);
@@ -155,7 +157,7 @@ public:
         return true;
     }
 
-    void print_blocked() const {
+    void print_blocked(std::function<void(const std::string&)> out) const {
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
         __u64 now = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
@@ -175,18 +177,23 @@ public:
                         expire_str = "EXPIRED";
                     }
                 }
-                log("  " + ip_to_string(next) + "  dropped=" + std::to_string(rec.hits) + " expires in " + expire_str);
+                std::string off_str = "";
+                if (storage_) {
+                    int off = storage_->get_offense_count(ip_to_string(next));
+                    if (off > 0) off_str = " offense=" + std::to_string(off);
+                }
+                out("  " + ip_to_string(next) + "  dropped=" + std::to_string(rec.hits) + " expires in " + expire_str + off_str);
                 ++count;
             }
             key = next; prev = &key;
         }
-        log("  (" + std::to_string(count) + " blocked IPs)");
+        out("  (" + std::to_string(count) + " blocked IPs)");
     }
 
-    void print_stats() const {
-        log("  packets dropped=" + std::to_string(read_stat(0)) +
+    void print_stats(std::function<void(const std::string&)> out) const {
+        out("  packets dropped=" + std::to_string(read_stat(0)) +
         "  passed=" + std::to_string(read_stat(1)));
-        log("  protocols: TCP=" + std::to_string(read_proto_stat(0)) +
+        out("  protocols: TCP=" + std::to_string(read_proto_stat(0)) +
         " UDP=" + std::to_string(read_proto_stat(1)) +
         " ICMP=" + std::to_string(read_proto_stat(2)) +
         " Other=" + std::to_string(read_proto_stat(3)));
@@ -238,6 +245,7 @@ private:
     }
 
     int allowed_fd_, blocked_fd_, stats_fd_, proto_stats_fd_;
+    Storage* storage_;
     std::jthread sweeper_;
 };
 
@@ -440,7 +448,7 @@ int main(int argc, char** argv) {
         RuleEngine rule_engine{"rules.yaml"};
 
         XdpEngine engine{argv[2], argv[1], fresh};
-        BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), engine.proto_stats_fd(), allow};
+        BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), engine.proto_stats_fd(), allow, &storage};
         
         // BlockCallback returns: 0 = ok, 1 = skipped (allowlist/dry-run), -1 = failed
         PlaybookRunner::BlockCallback block_cb = [&](const std::string& ip_str, const std::string& rule, int seconds) -> int {
@@ -463,7 +471,14 @@ int main(int argc, char** argv) {
             notifier.notify(a);
         };
         
-        PlaybookRunner runner{"playbooks.yaml", "known_ips.txt", block_cb, record_cb, notify_cb};
+        PlaybookRunner::OffenseCallback off_cb = [&](const std::string& ip) {
+            return storage.get_offense_count(ip);
+        };
+        PlaybookRunner::RecordOffenseCallback rec_off_cb = [&](const std::string& ip) {
+            storage.record_offense(ip);
+        };
+        
+        PlaybookRunner runner{"playbooks.yaml", "known_ips.txt", "blocklist.txt", block_cb, record_cb, notify_cb, off_cb, rec_off_cb};
         
         EventCallback on_event = [&](const Event& e) {
             log("[EVENT] " + e.to_json().dump());
@@ -471,9 +486,9 @@ int main(int argc, char** argv) {
             
             auto alerts = rule_engine.process(e);
             for (auto a : alerts) { // By value so we can mutate for enrichment
+                runner.execute(a); // Modifies 'a' (enrichment, block_seconds)
                 log("[ALERT] " + a.to_json().dump());
                 storage.insert_alert(a);
-                runner.execute(a);
             }
         };
 
@@ -508,32 +523,84 @@ int main(int argc, char** argv) {
         log("[engine] XDP attached to " + std::string{argv[1]} +
         ". Commands: allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | alerts | approve <id> | deny <id> | quit");
 
-        std::string line;
-        while (g_running && std::getline(std::cin, line)) {
+        auto process_command = [&](const std::string& line, std::function<void(const std::string&)> out) {
             std::istringstream iss{line};
-            std::string cmd, arg;
-            iss >> cmd >> arg;
-            if (cmd == "quit") break;
-            else if (cmd == "list")  blocklist.print_blocked();
-            else if (cmd == "stats") blocklist.print_stats();
-            else if (cmd == "alerts") storage.print_last_alerts(10);
+            std::string cmd, arg, arg2;
+            iss >> cmd >> arg >> arg2;
+            if (cmd == "quit") g_running = false;
+            else if (cmd == "list")  blocklist.print_blocked(out);
+            else if (cmd == "stats") blocklist.print_stats(out);
+            else if (cmd == "alerts") storage.print_last_alerts(10, out);
+            else if (cmd == "report") { storage.generate_report("report.md"); out("ok"); }
             else if (cmd == "limit") {
-                try { engine.set_limit(std::stoi(arg)); } catch (...) {}
+                try { engine.set_limit(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
             }
             else if (cmd == "approve") {
-                try { runner.approve(std::stoi(arg)); } catch (...) {}
+                try { runner.approve(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
             }
             else if (cmd == "deny") {
-                try { runner.deny(std::stoi(arg)); } catch (...) {}
+                try { runner.deny(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
             }
             else if (cmd == "block" || cmd == "unblock" || cmd == "allow" || cmd == "unallow") {
                 if (auto ip = parse_ipv4(arg)) {
-                    if (cmd == "block") blocklist.block(*ip, "manual");
-                    else if (cmd == "unblock") blocklist.unblock(*ip);
-                    else if (cmd == "allow") blocklist.allow_ip(*ip);
-                    else if (cmd == "unallow") blocklist.unallow_ip(*ip);
-                } else log("[error] invalid IPv4 address");
-            } else if (!cmd.empty()) log("[error] unknown command");
+                    if (cmd == "block") {
+                        int seconds = arg2.empty() ? 600 : std::stoi(arg2);
+                        blocklist.block(*ip, "manual", std::chrono::seconds(seconds));
+                        out("ok");
+                    }
+                    else if (cmd == "unblock") { blocklist.unblock(*ip); out("ok"); }
+                    else if (cmd == "allow") { blocklist.allow_ip(*ip); out("ok"); }
+                    else if (cmd == "unallow") { blocklist.unallow_ip(*ip); out("ok"); }
+                } else out("invalid IPv4 address");
+            } else if (!cmd.empty()) out("unknown command");
+        };
+
+        std::jthread socket_listener{[&](std::stop_token st) {
+            const char* sock_path = "/run/xdp_engine.sock";
+            unlink(sock_path);
+            int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+            if (server_fd < 0) return;
+            
+            struct sockaddr_un addr{};
+            addr.sun_family = AF_UNIX;
+            strncpy(addr.sun_path, sock_path, sizeof(addr.sun_path) - 1);
+            
+            if (bind(server_fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) {
+                chmod(sock_path, 0600);
+                listen(server_fd, 5);
+                
+                struct timeval tv{1, 0};
+                setsockopt(server_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+                
+                while (!st.stop_requested()) {
+                    int client_fd = accept(server_fd, nullptr, nullptr);
+                    if (client_fd >= 0) {
+                        struct ucred ucred{};
+                        socklen_t len = sizeof(struct ucred);
+                        if (getsockopt(client_fd, SOL_SOCKET, SO_PEERCRED, &ucred, &len) == 0 && ucred.uid == 0) {
+                            char buf[257];
+                            int n = read(client_fd, buf, 256);
+                            if (n > 0) {
+                                buf[n] = '\0';
+                                std::string req(buf);
+                                req.erase(req.find_last_not_of(" \t\r\n") + 1);
+                                process_command(req, [client_fd](const std::string& msg) {
+                                    std::string out = msg + "\n";
+                                    write(client_fd, out.c_str(), out.length());
+                                });
+                            }
+                        }
+                        close(client_fd);
+                    }
+                }
+            }
+            close(server_fd);
+            unlink(sock_path);
+        }};
+
+        std::string line;
+        while (g_running && std::getline(std::cin, line)) {
+            process_command(line, [](const std::string& msg) { log(msg); });
         }
         log("[engine] shutting down, detaching XDP");
     } catch (const std::exception& e) {

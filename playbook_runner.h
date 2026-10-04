@@ -13,9 +13,13 @@ public:
     using BlockCallback = std::function<int(const std::string& ip, const std::string& rule, int seconds)>;
     using RecordCallback = std::function<void(const ActionRecord&)>;
     using NotifyCallback = std::function<void(const Alert&)>;
+    using OffenseCallback = std::function<int(const std::string& ip)>;
+    using RecordOffenseCallback = std::function<void(const std::string& ip)>;
 
     PlaybookRunner(const std::string& yaml_path, const std::string& known_ips_path,
-                   BlockCallback block_cb, RecordCallback record_cb, NotifyCallback notify_cb);
+                   const std::string& blocklist_path,
+                   BlockCallback block_cb, RecordCallback record_cb, NotifyCallback notify_cb,
+                   OffenseCallback off_cb, RecordOffenseCallback rec_off_cb);
 
     void execute(Alert& alert);
     void approve(int id);
@@ -29,10 +33,13 @@ private:
     };
 
     std::unordered_map<std::string, std::vector<std::string>> playbooks_;
+    std::unordered_map<std::string, std::vector<int>> ladders_;
     std::unordered_map<std::string, std::string> known_ips_;
     BlockCallback block_cb_;
     RecordCallback record_cb_;
     NotifyCallback notify_cb_;
+    OffenseCallback offense_cb_;
+    RecordOffenseCallback record_offense_cb_;
     
     // Safety state
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> last_run_;

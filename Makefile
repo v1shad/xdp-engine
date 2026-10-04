@@ -11,7 +11,7 @@ ifneq ($(ARCH_INC),)
 BPF_CFLAGS += -I$(ARCH_INC)
 endif
 
-all: xdp_prog.bpf.o engine
+all: xdp_prog.bpf.o engine engine-cli
 
 # Stage 1: C -> BPF bytecode inside an ELF object
 xdp_prog.bpf.o: xdp_prog.bpf.c
@@ -21,5 +21,8 @@ xdp_prog.bpf.o: xdp_prog.bpf.c
 engine: engine.cpp rule_engine.cpp rule_engine.h storage.cpp storage.h playbook_runner.cpp playbook_runner.h notifier.cpp notifier.h http_detector.cpp http_detector.h
 	$(CXX) -std=c++20 -O2 -Wall -Wextra -pthread engine.cpp rule_engine.cpp storage.cpp playbook_runner.cpp notifier.cpp http_detector.cpp -o $@ -lbpf -lelf -lz -lyaml-cpp -lsqlite3 -lcurl
 
+engine-cli: engine-cli.cpp
+	$(CXX) -O2 -Wall -Wextra engine-cli.cpp -o $@
+
 clean:
-	rm -f xdp_prog.bpf.o engine
+	rm -f xdp_prog.bpf.o engine engine-cli

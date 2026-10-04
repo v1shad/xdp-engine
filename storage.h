@@ -38,7 +38,11 @@ public:
     void insert_action(const ActionRecord& act);
     void insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed, uint64_t tcp, uint64_t udp, uint64_t icmp, uint64_t other);
     
-    void print_last_alerts(int limit = 10);
+    int get_offense_count(const std::string& ip);
+    void record_offense(const std::string& ip);
+    
+    void print_last_alerts(int limit, std::function<void(const std::string&)> out);
+    void generate_report(const std::string& path);
 
 private:
     void exec_schema();
@@ -51,6 +55,9 @@ private:
     StmtPtr get_alerts_stmt_;
     StmtPtr insert_metrics_stmt_;
     StmtPtr delete_metrics_stmt_;
+    StmtPtr get_offense_stmt_;
+    StmtPtr record_offense_stmt_;
+    StmtPtr reset_offense_stmt_;
 };
 
 #endif // STORAGE_H
