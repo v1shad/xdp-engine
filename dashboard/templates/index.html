@@ -99,9 +99,62 @@
         .icon-event { color: #aaaaaa; }
         .icon-alert { color: #FF9800; }
         .icon-action { color: #03dac6; }
+        
+        .side-panel {
+            position: fixed;
+            top: 0; right: -400px; width: 360px; height: 100%;
+            background: #1e1e1e;
+            box-shadow: -4px 0 15px rgba(0,0,0,0.5);
+            padding: 20px;
+            transition: right 0.3s ease;
+            overflow-y: auto;
+            z-index: 1000;
+        }
+        .side-panel.open { right: 0; }
+        .close-btn {
+            background: none; border: none; color: #fff; font-size: 1.5em;
+            cursor: pointer; position: absolute; top: 10px; right: 15px;
+        }
+        .detail-group { margin-bottom: 20px; }
+        .detail-title { color: #aaaaaa; font-size: 0.9em; text-transform: uppercase; margin-bottom: 5px;}
+        .detail-value { font-size: 1.1em; }
     </style>
 </head>
 <body>
+    <div id="side-panel" class="side-panel">
+        <button class="close-btn" onclick="document.getElementById('side-panel').classList.remove('open')">&times;</button>
+        <h2 id="sp-rule">Incident Detail</h2>
+        
+        <div class="detail-group">
+            <div class="detail-title">Severity</div>
+            <div class="detail-value"><span id="sp-sev" class="badge"></span></div>
+        </div>
+        <div class="detail-group">
+            <div class="detail-title">Source IP</div>
+            <div class="detail-value" id="sp-ip"></div>
+        </div>
+        <div class="detail-group">
+            <div class="detail-title">MITRE Techniques</div>
+            <div class="detail-value" id="sp-mitre"></div>
+        </div>
+        <div class="detail-group">
+            <div class="detail-title">Labels & Offense</div>
+            <div class="detail-value" id="sp-labels"></div>
+        </div>
+        <div class="detail-group">
+            <div class="detail-title">Block Duration</div>
+            <div class="detail-value" id="sp-block"></div>
+        </div>
+        <div class="detail-group">
+            <div class="detail-title">Actions Taken</div>
+            <div class="detail-value" id="sp-actions"></div>
+        </div>
+        <div class="detail-group">
+            <div class="detail-title">Related Events (Last 5m)</div>
+            <div class="detail-value" id="sp-events"></div>
+        </div>
+    </div>
+
     <h1>Intrusion Engine Dashboard</h1>
     
     <div class="grid">
@@ -142,6 +195,59 @@
         // Setup Chart.js defaults for dark theme
         Chart.defaults.color = '#aaaaaa';
         Chart.defaults.font.size = 14;
+        
+        const mitreLookup = {
+            "T1110": "Brute Force",
+            "T1046": "Network Service Discovery",
+            "T1190": "Exploit Public-Facing Application"
+        };
+        
+        async function showIncidentDetail(id) {
+            try {
+                let res = await fetch('/api/alert/' + id);
+                if (!res.ok) return;
+                let data = await res.json();
+                
+                document.getElementById('sp-rule').textContent = data.alert.rule;
+                
+                let sevEl = document.getElementById('sp-sev');
+                sevEl.textContent = data.alert.severity;
+                sevEl.className = 'badge badge-' + data.alert.severity;
+                
+                document.getElementById('sp-ip').textContent = data.alert.src_ip;
+                
+                let mitres = (data.alert.mitre || '').split(',').filter(x => x);
+                let mitreEl = document.getElementById('sp-mitre');
+                mitreEl.innerHTML = ''; // clearing old nodes
+                mitres.forEach(m => {
+                    let d = document.createElement('div');
+                    d.textContent = m + (mitreLookup[m] ? ' - ' + mitreLookup[m] : '');
+                    mitreEl.appendChild(d);
+                });
+                
+                let offStr = data.alert.offense_count ? ` (Offense #${data.alert.offense_count})` : '';
+                document.getElementById('sp-labels').textContent = (data.alert.label || 'none') + offStr;
+                document.getElementById('sp-block').textContent = data.alert.block_seconds ? `${data.alert.block_seconds}s` : 'None';
+                
+                let actionsEl = document.getElementById('sp-actions');
+                actionsEl.innerHTML = '';
+                data.actions.forEach(a => {
+                    let d = document.createElement('div');
+                    d.textContent = `[${a.ts.substring(11,19)}] ${a.action} - ${a.reason}`;
+                    actionsEl.appendChild(d);
+                });
+                
+                let evEl = document.getElementById('sp-events');
+                evEl.innerHTML = '';
+                data.events.forEach(e => {
+                    let d = document.createElement('div');
+                    d.textContent = `[${e.ts.substring(11,19)}] ${e.type}`;
+                    evEl.appendChild(d);
+                });
+                
+                document.getElementById('side-panel').classList.add('open');
+            } catch(e) { console.error(e); }
+        }
 
         let attackersChart = new Chart(document.getElementById('attackersChart'), {
             type: 'bar',
@@ -198,7 +304,7 @@
                     if (item.row_type === 'alert') {
                         div.style.borderLeftColor = '#cf6679';
                         div.style.cursor = 'pointer';
-                        // For task 2: div.onclick = () => showIncidentDetail(item.id);
+                        div.onclick = () => showIncidentDetail(item.id);
                     } else if (item.row_type === 'action') {
                         div.style.borderLeftColor = '#03dac6';
                     }

@@ -101,6 +101,37 @@ def api_drops_per_sec():
             
     return jsonify(data)
 
+@app.route('/api/alert/<int:alert_id>')
+def api_alert(alert_id):
+    db = get_db()
+    alert = db.execute("""
+        SELECT a.*, o.offense_count 
+        FROM alerts a 
+        LEFT JOIN offenders o ON a.src_ip = o.ip 
+        WHERE a.id = ?
+    """, (alert_id,)).fetchone()
+    
+    if not alert:
+        return jsonify({"error": "not found"}), 404
+        
+    events = db.execute("""
+        SELECT * FROM events 
+        WHERE src_ip = ? AND ts <= ? AND ts >= datetime(?, '-5 minutes')
+        ORDER BY ts DESC
+    """, (alert['src_ip'], alert['ts'], alert['ts'])).fetchall()
+    
+    actions = db.execute("""
+        SELECT * FROM actions 
+        WHERE src_ip = ? AND ts >= ? AND ts <= datetime(?, '+1 minute')
+        ORDER BY ts ASC
+    """, (alert['src_ip'], alert['ts'], alert['ts'])).fetchall()
+    
+    return jsonify({
+        "alert": dict(alert),
+        "events": [dict(e) for e in events],
+        "actions": [dict(a) for a in actions]
+    })
+
 if __name__ == '__main__':
     # Bind to 127.0.0.1:5000, no debug mode
     app.run(host='127.0.0.1', port=5000, debug=False)
