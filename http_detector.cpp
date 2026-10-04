@@ -47,7 +47,7 @@ void HttpDetector::process_line(const std::string& line) {
     if (!std::regex_search(line, match, log_rx)) return;
     
     std::string ip = match[1].str();
-    std::string path = sanitize_utf8(match[2].str());
+    std::string path = sanitize_utf8(url_decode(match[2].str()));
     std::string ua = sanitize_utf8(match[3].str());
     
     if (!is_valid_ip(ip)) return;

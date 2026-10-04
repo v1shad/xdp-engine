@@ -4,6 +4,38 @@
 #include <string>
 #include <string_view>
 #include <cstdint>
+inline std::string url_decode(const std::string& src) {
+    std::string ret;
+    ret.reserve(src.length());
+    for (size_t i = 0; i < src.length(); ++i) {
+        if (src[i] == '%') {
+            if (i + 2 < src.length()) {
+                char hex1 = src[i+1];
+                char hex2 = src[i+2];
+                int val = 0;
+                bool ok = true;
+                if (hex1 >= '0' && hex1 <= '9') val = (hex1 - '0') << 4;
+                else if (hex1 >= 'a' && hex1 <= 'f') val = (hex1 - 'a' + 10) << 4;
+                else if (hex1 >= 'A' && hex1 <= 'F') val = (hex1 - 'A' + 10) << 4;
+                else ok = false;
+                if (ok) {
+                    if (hex2 >= '0' && hex2 <= '9') val |= (hex2 - '0');
+                    else if (hex2 >= 'a' && hex2 <= 'f') val |= (hex2 - 'a' + 10);
+                    else if (hex2 >= 'A' && hex2 <= 'F') val |= (hex2 - 'A' + 10);
+                    else ok = false;
+                }
+                if (ok) {
+                    ret += static_cast<char>(val);
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        ret += src[i];
+    }
+    return ret;
+}
+
 
 inline std::string sanitize_utf8(std::string_view sv) {
     std::string out;

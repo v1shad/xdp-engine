@@ -269,3 +269,11 @@ TEST(LogTailerTest, RotationAndTruncation) {
     std::filesystem::remove(test_file);
     std::filesystem::remove("/tmp/test_tailer.log.old");
 }
+
+TEST(TextUtilTest, UrlDecode) {
+    EXPECT_EQ(url_decode("%27%20OR%201=1"), "' OR 1=1");
+    EXPECT_EQ(url_decode("%2e%2e%2f"), "../");
+    EXPECT_EQ(url_decode("%zz"), "%zz");
+    EXPECT_EQ(url_decode("test%"), "test%");
+    EXPECT_EQ(url_decode("%252e"), "%2e");
+}

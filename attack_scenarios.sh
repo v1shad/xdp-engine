@@ -1,6 +1,7 @@
 #!/bin/bash
 set -u
 
+chown root:root /tmp/fake_auth.log /tmp/fake_access.log 2>/dev/null || true
 # Check for required environment
 if ! ip netns list | grep -q "^attacker\b"; then
     echo "ERROR: Namespace 'attacker' does not exist."
@@ -114,11 +115,11 @@ function run_stage4() {
     echo "=========================================================="
     sleep "$PAUSE"
     echo "[*] Writing malicious access log entries for 10.10.0.5..."
-    echo '10.10.0.5 - - [04/Oct/2026:12:00:00 +0000] "GET /../../../etc/passwd HTTP/1.1" 200' >> /tmp/fake_access.log
+    echo '10.10.0.5 - - [04/Oct/2026:12:00:00 +0000] "GET /../../../etc/passwd HTTP/1.1" 200 512 "-" "Mozilla/5.0"' >> /tmp/fake_access.log
     sleep 0.5
-    echo '10.10.0.5 - - [04/Oct/2026:12:00:01 +0000] "GET /login?user=admin%27%20OR%201=1-- HTTP/1.1" 200' >> /tmp/fake_access.log
+    echo '10.10.0.5 - - [04/Oct/2026:12:00:01 +0000] "GET /login?user=admin%27%20OR%201=1-- HTTP/1.1" 200 512 "-" "Mozilla/5.0"' >> /tmp/fake_access.log
     sleep 0.5
-    echo '10.10.0.5 - - [04/Oct/2026:12:00:02 +0000] "GET / HTTP/1.1" 200 "-" "sqlmap/1.5.8"' >> /tmp/fake_access.log
+    echo '10.10.0.5 - - [04/Oct/2026:12:00:02 +0000] "GET / HTTP/1.1" 200 512 "-" "sqlmap/1.5.8"' >> /tmp/fake_access.log
     
     echo "[*] Checking engine-cli list..."
     ./engine-cli list | grep "10.10.0.5" || echo "10.10.0.5 not found in blocklist"
