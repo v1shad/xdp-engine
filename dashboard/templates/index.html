@@ -132,6 +132,16 @@
         }
         .health-ok { color: #03dac6; }
         .health-err { color: #cf6679; }
+        
+        /* Demo Mode */
+        body.demo-mode {
+            font-size: 1.2em;
+        }
+        body.demo-mode .health-strip { display: none; }
+        body.demo-mode .charts > .chart-container:nth-child(2) { display: none; } /* hide protocol mix */
+        body.demo-mode .charts:nth-of-type(2) { display: none; } /* hide tables row */
+        body.demo-mode .grid .card-value { font-size: 4em; }
+        body.demo-mode .charts:nth-of-type(1) { grid-template-columns: 1fr; }
     </style>
 </head>
 <body>
@@ -230,6 +240,10 @@
 
     <script src="/static/chart.js"></script>
     <script>
+        if (new URLSearchParams(window.location.search).get('demo') === '1') {
+            document.body.classList.add('demo-mode');
+        }
+
         // Setup Chart.js defaults for dark theme
         Chart.defaults.color = '#aaaaaa';
         Chart.defaults.font.size = 14;
