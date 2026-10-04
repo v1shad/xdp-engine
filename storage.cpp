@@ -25,7 +25,7 @@ Storage::Storage(const std::string& db_path) {
     sqlite3_prepare_v2(db_.get(), "SELECT a.ts, a.rule, a.src_ip, a.action, a.label, o.offense_count FROM alerts a LEFT JOIN offenders o ON a.src_ip = o.ip ORDER BY a.id DESC LIMIT ?", -1, &stmt, nullptr);
     get_alerts_stmt_.reset(stmt);
     
-    sqlite3_prepare_v2(db_.get(), "INSERT INTO metrics(ts, dropped, passed, tcp, udp, icmp, other) VALUES(?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
+    sqlite3_prepare_v2(db_.get(), "INSERT INTO metrics(ts, dropped, passed, tcp, udp, icmp, other, syn_limit, xdp_mode) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", -1, &stmt, nullptr);
     insert_metrics_stmt_.reset(stmt);
     
     sqlite3_prepare_v2(db_.get(), "DELETE FROM metrics WHERE ts < ?", -1, &stmt, nullptr);
@@ -74,6 +74,8 @@ void Storage::exec_schema() {
     
     // Attempt to add label column for backwards compatibility
     sqlite3_exec(db_.get(), "ALTER TABLE alerts ADD COLUMN label TEXT", nullptr, nullptr, nullptr);
+    sqlite3_exec(db_.get(), "ALTER TABLE metrics ADD COLUMN syn_limit INTEGER DEFAULT 200", nullptr, nullptr, nullptr);
+    sqlite3_exec(db_.get(), "ALTER TABLE metrics ADD COLUMN xdp_mode TEXT DEFAULT 'unknown'", nullptr, nullptr, nullptr);
 }
 
 void Storage::insert_event(const Event& e) {
@@ -142,7 +144,7 @@ void Storage::print_last_alerts(int limit, std::function<void(const std::string&
     }
 }
 
-void Storage::insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed, uint64_t tcp, uint64_t udp, uint64_t icmp, uint64_t other) {
+void Storage::insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed, uint64_t tcp, uint64_t udp, uint64_t icmp, uint64_t other, int syn_limit, const std::string& xdp_mode) {
     std::lock_guard<std::mutex> lock(db_mutex_);
     
     // Insert new metrics
@@ -154,6 +156,8 @@ void Storage::insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed, uin
     sqlite3_bind_int64(insert_metrics_stmt_.get(), 5, udp);
     sqlite3_bind_int64(insert_metrics_stmt_.get(), 6, icmp);
     sqlite3_bind_int64(insert_metrics_stmt_.get(), 7, other);
+    sqlite3_bind_int(insert_metrics_stmt_.get(), 8, syn_limit);
+    sqlite3_bind_text(insert_metrics_stmt_.get(), 9, xdp_mode.c_str(), -1, SQLITE_STATIC);
     if (sqlite3_step(insert_metrics_stmt_.get()) != SQLITE_DONE) {
         std::cerr << "[error] metrics insert failed: " << sqlite3_errmsg(db_.get()) << "\n";
     }

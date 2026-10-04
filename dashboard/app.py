@@ -132,6 +132,68 @@ def api_alert(alert_id):
         "actions": [dict(a) for a in actions]
     })
 
+@app.route('/api/panels')
+def api_panels():
+    db = get_db()
+    
+    rows = db.execute("""
+        SELECT a.src_ip, a.block_seconds, 
+               CAST((strftime('%s', 'now') - strftime('%s', a.ts)) AS INTEGER) as age,
+               o.offense_count
+        FROM alerts a 
+        LEFT JOIN offenders o ON a.src_ip = o.ip 
+        WHERE a.action = 'block' AND a.block_seconds > 0
+    """).fetchall()
+    
+    active_blocks = []
+    for r in rows:
+        remain = r['block_seconds'] - r['age']
+        if remain > 0:
+            active_blocks.append({
+                "ip": r['src_ip'],
+                "remain": remain,
+                "offense": r['offense_count'] or 0
+            })
+            
+    offenders = db.execute("SELECT ip, offense_count, last_offense FROM offenders ORDER BY offense_count DESC, last_offense DESC LIMIT 10").fetchall()
+    
+    metrics = db.execute("SELECT tcp, udp, icmp, other, ts, syn_limit, xdp_mode FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
+    if not metrics:
+        metrics = {"tcp": 0, "udp": 0, "icmp": 0, "other": 0, "ts": 0, "syn_limit": 200, "xdp_mode": "unknown"}
+        
+    now = int(time.time())
+    engine_running = (now - metrics['ts']) < 15
+    try:
+        db_size = os.path.getsize(DB_PATH)
+    except:
+        db_size = 0
+        
+    health = {
+        "running": engine_running,
+        "xdp_mode": metrics['xdp_mode'],
+        "syn_limit": metrics['syn_limit'],
+        "db_size": db_size
+    }
+    
+    return jsonify({
+        "active_blocks": active_blocks,
+        "offenders": [dict(o) for o in offenders],
+        "protocol_mix": {"tcp": metrics['tcp'], "udp": metrics['udp'], "icmp": metrics['icmp'], "other": metrics['other']},
+        "health": health
+    })
+
+@app.route('/api/timeline')
+def api_timeline():
+    db = get_db()
+    rows = db.execute("""
+        SELECT strftime('%Y-%m-%d %H:%M', ts) as minute, severity, count(*) as count 
+        FROM alerts 
+        WHERE datetime(ts) > datetime('now', '-30 minutes') 
+        GROUP BY minute, severity 
+        ORDER BY minute
+    """).fetchall()
+    return jsonify([dict(r) for r in rows])
+
 if __name__ == '__main__':
     # Bind to 127.0.0.1:5000, no debug mode
     app.run(host='127.0.0.1', port=5000, debug=False)

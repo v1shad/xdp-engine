@@ -119,6 +119,20 @@
         .detail-title { color: #aaaaaa; font-size: 0.9em; text-transform: uppercase; margin-bottom: 5px;}
         .detail-value { font-size: 1.1em; }
     </style>
+    <style>
+        /* New health strip */
+        .health-strip {
+            background: #2c2c2c;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        .health-ok { color: #03dac6; }
+        .health-err { color: #cf6679; }
+    </style>
 </head>
 <body>
     <div id="side-panel" class="side-panel">
@@ -157,6 +171,13 @@
 
     <h1>Intrusion Engine Dashboard</h1>
     
+    <div class="health-strip" id="health-strip">
+        <div>Engine: <span id="health-run">Unknown</span></div>
+        <div>XDP Mode: <span id="health-xdp">Unknown</span></div>
+        <div>SYN Limit: <span id="health-syn">Unknown</span>/s</div>
+        <div>DB Size: <span id="health-db">0</span></div>
+    </div>
+    
     <div class="grid">
         <div class="card">
             <div class="card-value" id="val-events">0</div>
@@ -178,12 +199,29 @@
 
     <div class="charts">
         <div class="chart-container">
-            <h2>Top Attackers</h2>
-            <canvas id="attackersChart"></canvas>
+            <h2>Attack Timeline (Last 30m)</h2>
+            <canvas id="timelineChart"></canvas>
         </div>
         <div class="chart-container">
-            <h2>Drops per Second (Last 5 min)</h2>
-            <canvas id="dropsChart"></canvas>
+            <h2>Protocol Mix</h2>
+            <canvas id="protocolChart"></canvas>
+        </div>
+    </div>
+
+    <div class="charts">
+        <div class="chart-container">
+            <h2>Active Blocks</h2>
+            <table>
+                <thead><tr><th>IP</th><th>Offense</th><th>Expires In</th></tr></thead>
+                <tbody id="active-blocks-body"></tbody>
+            </table>
+        </div>
+        <div class="chart-container">
+            <h2>Offenders Leaderboard</h2>
+            <table>
+                <thead><tr><th>IP</th><th>Offense Count</th><th>Last Offense</th></tr></thead>
+                <tbody id="offenders-body"></tbody>
+            </table>
         </div>
     </div>
 
@@ -249,21 +287,26 @@
             } catch(e) { console.error(e); }
         }
 
-        let attackersChart = new Chart(document.getElementById('attackersChart'), {
+        let timelineChart = new Chart(document.getElementById('timelineChart'), {
             type: 'bar',
-            data: { labels: [], datasets: [{ label: 'Events', data: [], backgroundColor: '#cf6679' }] },
+            data: { labels: [], datasets: [] },
+            options: { responsive: true, scales: { x: { stacked: true }, y: { stacked: true } } }
+        });
+
+        let protocolChart = new Chart(document.getElementById('protocolChart'), {
+            type: 'doughnut',
+            data: { labels: ['TCP', 'UDP', 'ICMP', 'Other'], datasets: [{ data: [0,0,0,0], backgroundColor: ['#bb86fc', '#03dac6', '#cf6679', '#aaaaaa'] }] },
             options: { responsive: true }
         });
 
-        let dropsChart = new Chart(document.getElementById('dropsChart'), {
-            type: 'line',
-            data: { labels: [], datasets: [{ label: 'Drops/sec', data: [], borderColor: '#03dac6', tension: 0.1 }] },
-            options: { responsive: true, scales: { x: { display: false }, y: { beginAtZero: true } } }
-        });
+        function formatTime(s) {
+            let m = Math.floor(s/60);
+            let rs = s%60;
+            return m + 'm ' + rs + 's';
+        }
 
         async function updateDashboard() {
             try {
-                // Update Summary
                 let res = await fetch('/api/summary');
                 let summary = await res.json();
                 document.getElementById('val-events').textContent = summary.total_events;
@@ -271,19 +314,68 @@
                 document.getElementById('val-blocks').textContent = summary.active_blocks;
                 document.getElementById('val-drops').textContent = summary.total_drops;
 
-                // Update Top Attackers
-                res = await fetch('/api/top_attackers');
-                let attackers = await res.json();
-                attackersChart.data.labels = attackers.map(a => a.src_ip);
-                attackersChart.data.datasets[0].data = attackers.map(a => a.count);
-                attackersChart.update();
-
-                // Update Drops/sec
-                res = await fetch('/api/drops_per_sec');
-                let drops = await res.json();
-                dropsChart.data.labels = drops.map(d => new Date(d.ts * 1000).toLocaleTimeString());
-                dropsChart.data.datasets[0].data = drops.map(d => d.pps);
-                dropsChart.update();
+                res = await fetch('/api/panels');
+                let panels = await res.json();
+                
+                // Health Strip
+                let rEl = document.getElementById('health-run');
+                rEl.textContent = panels.health.running ? 'RUNNING' : 'STOPPED';
+                rEl.className = panels.health.running ? 'health-ok' : 'health-err';
+                document.getElementById('health-xdp').textContent = panels.health.xdp_mode.toUpperCase();
+                document.getElementById('health-syn').textContent = panels.health.syn_limit;
+                document.getElementById('health-db').textContent = (panels.health.db_size / 1024 / 1024).toFixed(2) + ' MB';
+                
+                // Active blocks
+                let abEl = document.getElementById('active-blocks-body');
+                abEl.innerHTML = '';
+                panels.active_blocks.forEach(b => {
+                    let tr = document.createElement('tr');
+                    let td1 = document.createElement('td'); td1.textContent = b.ip; tr.appendChild(td1);
+                    let td2 = document.createElement('td'); td2.textContent = b.offense; tr.appendChild(td2);
+                    let td3 = document.createElement('td'); td3.textContent = formatTime(b.remain); tr.appendChild(td3);
+                    abEl.appendChild(tr);
+                });
+                
+                // Offenders Leaderboard
+                let olEl = document.getElementById('offenders-body');
+                olEl.innerHTML = '';
+                panels.offenders.forEach(o => {
+                    let tr = document.createElement('tr');
+                    let td1 = document.createElement('td'); td1.textContent = o.ip; tr.appendChild(td1);
+                    let td2 = document.createElement('td'); td2.textContent = o.offense_count; tr.appendChild(td2);
+                    let td3 = document.createElement('td'); 
+                    td3.textContent = new Date(o.last_offense * 1000).toLocaleString(); 
+                    tr.appendChild(td3);
+                    olEl.appendChild(tr);
+                });
+                
+                // Protocol Mix
+                protocolChart.data.datasets[0].data = [
+                    panels.protocol_mix.tcp, panels.protocol_mix.udp, 
+                    panels.protocol_mix.icmp, panels.protocol_mix.other
+                ];
+                protocolChart.update();
+                
+                // Timeline
+                res = await fetch('/api/timeline');
+                let timeline = await res.json();
+                
+                let times = [...new Set(timeline.map(t => t.minute))];
+                let sevs = ['low', 'medium', 'high', 'critical'];
+                let colors = {'low': '#2196F3', 'medium': '#FFC107', 'high': '#FF9800', 'critical': '#F44336'};
+                
+                let datasets = sevs.map(sev => ({
+                    label: sev.toUpperCase(),
+                    backgroundColor: colors[sev],
+                    data: times.map(time => {
+                        let row = timeline.find(t => t.minute === time && t.severity === sev);
+                        return row ? row.count : 0;
+                    })
+                }));
+                
+                timelineChart.data.labels = times.map(t => t.substring(11));
+                timelineChart.data.datasets = datasets;
+                timelineChart.update();
 
                 // Update Live Feed
                 res = await fetch('/api/feed');

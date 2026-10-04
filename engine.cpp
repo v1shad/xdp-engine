@@ -252,7 +252,7 @@ private:
 /* ---------- XdpEngine: load + attach, with automatic detach ---------- */
 class XdpEngine {
 public:
-    XdpEngine(const std::string& obj_path, const std::string& ifname, bool fresh) {
+    XdpEngine(const std::string& obj_path, const std::string& ifname, bool fresh) : ifname_{ifname} {
         const unsigned ifindex = if_nametoindex(ifname.c_str());   // "eth0" -> e.g. 2
         if (ifindex == 0) throw std::runtime_error("no such interface: " + ifname);
 
@@ -318,12 +318,15 @@ public:
     int stats_fd()   const { return stats_fd_; }
     int events_fd()  const { return events_fd_; }
     int proto_stats_fd() const { return proto_stats_fd_; }
+    int get_limit() const { return limit_; }
+    std::string get_ifname() const { return ifname_; }
     
     void set_limit(std::uint32_t limit) {
         std::uint32_t zero = 0;
         if (!map_update(limits_fd_, zero, limit)) {
             log("[error] Failed to set limit");
         } else {
+            limit_ = limit;
             log("[engine] SYN rate limit set to " + std::to_string(limit) + "/s");
         }
     }
@@ -332,6 +335,8 @@ private:
     ObjPtr  obj_;      // declared first => destroyed LAST (link must go before the object)
     LinkPtr link_;     // destroyed first => XDP program detaches from the interface
     int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1}, events_fd_{-1}, limits_fd_{-1}, proto_stats_fd_{-1};
+    int limit_{200};
+    std::string ifname_;
 };
 
 /* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
@@ -506,7 +511,24 @@ int main(int argc, char** argv) {
             }
         }};
         
-        std::jthread metrics_poller{[&storage, &blocklist](std::stop_token st) {
+        auto get_xdp_mode = [](const std::string& ifname) -> std::string {
+            char buf[128];
+            std::string result = "none";
+            std::string cmd = "ip -json link show " + ifname;
+            FILE* pipe = popen(cmd.c_str(), "r");
+            if (!pipe) return result;
+            std::string out;
+            while (fgets(buf, sizeof(buf), pipe) != nullptr) out += buf;
+            pclose(pipe);
+            if (out.find("\"xdp\":") != std::string::npos) {
+                if (out.find("\"mode\":1") != std::string::npos) result = "skb";
+                else if (out.find("\"mode\":2") != std::string::npos) result = "native";
+                else result = "attached";
+            }
+            return result;
+        };
+
+        std::jthread metrics_poller{[&storage, &blocklist, &engine, get_xdp_mode](std::stop_token st) {
             while (!st.stop_requested()) {
                 std::mutex m; std::unique_lock lk(m);
                 if (std::condition_variable_any().wait_for(lk, st, 2s, []{return false;})) {
@@ -516,7 +538,9 @@ int main(int argc, char** argv) {
                 auto [dropped, passed, tcp, udp, icmp, other] = blocklist.get_stats();
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
-                storage.insert_metrics(ts.tv_sec, dropped, passed, tcp, udp, icmp, other);
+                
+                std::string mode = get_xdp_mode(engine.get_ifname());
+                storage.insert_metrics(ts.tv_sec, dropped, passed, tcp, udp, icmp, other, engine.get_limit(), mode);
             }
         }};
 
