@@ -4,7 +4,8 @@ from flask import Flask, render_template, jsonify, g
 import time
 
 app = Flask(__name__)
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'engine.db'))
+DB_PATH = os.environ.get("ENGINE_DB", "/opt/xdp-engine/engine.db")
+print(f"[*] Dashboard starting. Using database: {DB_PATH}")
 
 def get_db():
     db = getattr(g, '_database', None)

@@ -87,6 +87,7 @@ To demonstrate the full dashboard and engine pipeline to your professor:
 1. Open terminal 1 and start the Flask dashboard:
    ```bash
    python3 dashboard/app.py
+   (It defaults to /opt/xdp-engine/engine.db. Override with ENGINE_DB=./engine.db)
    ```
 2. Open your web browser and navigate to `http://127.0.0.1:5000`. You should see the empty dashboard.
 3. Open terminal 2 and start the engine with the dummy log file:
