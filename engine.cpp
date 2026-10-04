@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cerrno>
 #include <unistd.h>
+#include <linux/if_link.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -519,20 +520,16 @@ int main(int argc, char** argv) {
         }};
         
         auto get_xdp_mode = [](const std::string& ifname) -> std::string {
-            char buf[128];
-            std::string result = "none";
-            std::string cmd = "ip -json link show " + ifname;
-            FILE* pipe = popen(cmd.c_str(), "r");
-            if (!pipe) return result;
-            std::string out;
-            while (fgets(buf, sizeof(buf), pipe) != nullptr) out += buf;
-            pclose(pipe);
-            if (out.find("\"xdp\":") != std::string::npos) {
-                if (out.find("\"mode\":1") != std::string::npos) result = "skb";
-                else if (out.find("\"mode\":2") != std::string::npos) result = "native";
-                else result = "attached";
+            int ifindex = if_nametoindex(ifname.c_str());
+            if (ifindex == 0) return "none";
+            DECLARE_LIBBPF_OPTS(bpf_xdp_query_opts, opts);
+            if (bpf_xdp_query(ifindex, 0, &opts) < 0) return "none";
+            switch (opts.attach_mode) {
+                case XDP_ATTACHED_DRV: return "native";
+                case XDP_ATTACHED_SKB: return "skb";
+                case XDP_ATTACHED_HW: return "offload";
+                default: return "none";
             }
-            return result;
         };
 
         std::jthread metrics_poller{[&storage, &blocklist, &engine, get_xdp_mode](std::stop_token st) {
