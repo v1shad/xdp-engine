@@ -6,6 +6,7 @@
 #include <bpf/libbpf.h>     // bpf_object__open_file, bpf_program__attach_xdp, ...
 #include "common.h"
 #include "http_detector.h"
+#include "text_util.h"
 
 #include <atomic>
 #include <cerrno>
@@ -353,29 +354,37 @@ public:
     }
 
 private:
-    void handle_line(const std::string& line) {
-        static const std::regex re{
-            R"(Failed password for (?:invalid user )?(.+?) from (\d{1,3}(?:\.\d{1,3}){3}))"};
-        std::smatch m;
-        if (!std::regex_search(line, m, re)) return;
-        
-        std::string user = m[1].str();
-        std::string ip_str = m[2].str();
-        
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        char time_buf[32];
-        strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
+    void handle_line(const std::string& line_in) {
+        try {
+            std::string line = line_in;
+            if (line.size() > 4096) line = line.substr(0, 4096);
+            static const std::regex re{
+                R"(Failed password for (?:invalid user )?(.+?) from (\d{1,3}(?:\.\d{1,3}){3}))"};
+            std::smatch m;
+            if (!std::regex_search(line, m, re)) return;
+            std::string user = sanitize_utf8(m[1].str());
+            std::string ip_str = m[2].str();
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            char time_buf[32];
+            strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
+            Event e;
+            e.ts_iso = time_buf;
+            e.source = "ssh_log";
+            e.type = "ssh_failed";
+            e.src_ip = ip_str;
+            e.user = user;
+            e.severity = 3;
+            if (cb_) cb_(e);
+        } catch (const std::exception& e) {
+            static auto last_warn = std::chrono::steady_clock::time_point{};
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_warn > std::chrono::seconds(5)) {
+                std::cerr << "[WARN] Exception in SshDetector: " << e.what() << "\n";
+                last_warn = now;
+            }
+        }
 
-        Event e;
-        e.ts_iso = time_buf;
-        e.source = "ssh_log";
-        e.type = "ssh_failed";
-        e.src_ip = ip_str;
-        e.user = user;
-        e.severity = 3;
-        
-        if (cb_) cb_(e);
     }
 
     std::string path_;
@@ -388,7 +397,41 @@ static std::atomic<bool> g_running{true};
 extern "C" void on_signal(int) { g_running = false; }
 
 static int handle_event(void* ctx, void *data, size_t size) {
-    if (size < sizeof(struct drop_event)) return 0;
+    try {
+        if (size < sizeof(struct drop_event)) return 0;
+        auto* ev = static_cast<struct drop_event*>(data);
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        char time_buf[32];
+        strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
+        Event e;
+        e.ts_iso = time_buf;
+        e.source = "xdp_ringbuf";
+        if (ev->reason == REASON_RATELIMIT) {
+            e.type = "rate_limit_exceeded";
+        } else if (ev->reason == REASON_PORTSCAN) {
+            e.type = "port_scan";
+            e.severity = 4;
+        } else {
+            e.type = "packet_dropped";
+        }
+        e.src_ip = ip_to_string(ev->src_ip);
+        e.user = "";
+        e.severity = 5;
+        if (ctx) {
+            auto* cb = static_cast<EventCallback*>(ctx);
+            (*cb)(e);
+        }
+    } catch (const std::exception& e) {
+        static auto last_warn = std::chrono::steady_clock::time_point{};
+        auto now = std::chrono::steady_clock::now();
+        if (now - last_warn > std::chrono::seconds(5)) {
+            std::cerr << "[WARN] Exception in ringbuf handle_event: " << e.what() << "\n";
+            last_warn = now;
+        }
+    }
+    return 0;
+}
     auto* ev = static_cast<struct drop_event*>(data);
     
     struct timespec ts;
@@ -482,13 +525,13 @@ int main(int argc, char** argv) {
         PlaybookRunner runner{"playbooks.yaml", "known_ips.txt", "blocklist.txt", block_cb, record_cb, notify_cb, off_cb, rec_off_cb};
         
         EventCallback on_event = [&](const Event& e) {
-            log("[EVENT] " + e.to_json().dump());
+            log("[EVENT] " + e.to_json().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
             storage.insert_event(e);
             
             auto alerts = rule_engine.process(e);
             for (auto a : alerts) { // By value so we can mutate for enrichment
                 runner.execute(a); // Modifies 'a' (enrichment, block_seconds)
-                log("[ALERT] " + a.to_json().dump());
+                log("[ALERT] " + a.to_json().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
                 storage.insert_alert(a);
             }
         };

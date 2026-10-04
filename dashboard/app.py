@@ -12,6 +12,7 @@ def get_db():
         # Open READ-ONLY using URI
         uri = f"file:{DB_PATH}?mode=ro"
         db = g._database = sqlite3.connect(uri, uri=True)
+        db.text_factory = lambda b: b.decode("utf-8", "replace")
         db.row_factory = sqlite3.Row
     return db
 

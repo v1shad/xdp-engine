@@ -1,6 +1,7 @@
 #include "http_detector.h"
 #include <fstream>
 #include <iostream>
+#include "text_util.h"
 #include <arpa/inet.h>
 #include <chrono>
 #include <ctime>
@@ -43,7 +44,7 @@ void HttpDetector::watch_loop(std::stop_token st) {
         
         std::string line;
         while (std::getline(ifs, line)) {
-            process_line(line);
+            try { process_line(line); } catch(const std::exception& e) { static auto last_warn = std::chrono::steady_clock::time_point{}; auto now = std::chrono::steady_clock::now(); if (now - last_warn > std::chrono::seconds(5)) { std::cerr << "[WARN] Exception in http_detector: " << e.what() << "\n"; last_warn = now; } }
         }
         
         if (ifs.eof()) {
@@ -65,8 +66,8 @@ void HttpDetector::process_line(const std::string& line) {
     if (!std::regex_search(line, match, log_rx)) return;
     
     std::string ip = match[1].str();
-    std::string path = match[2].str();
-    std::string ua = match[3].str();
+    std::string path = sanitize_utf8(match[2].str());
+    std::string ua = sanitize_utf8(match[3].str());
     
     if (!is_valid_ip(ip)) return;
     
