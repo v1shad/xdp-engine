@@ -619,8 +619,17 @@ int main(int argc, char** argv) {
         }};
 
         std::string line;
-        while (g_running && std::getline(std::cin, line)) {
-            process_command(line, [](const std::string& msg) { log(msg); });
+        if (isatty(STDIN_FILENO)) {
+            while (g_running && std::getline(std::cin, line)) {
+                process_command(line, [](const std::string& msg) { log(msg); });
+            }
+        }
+        
+        if (g_running) {
+            log("[engine] running in daemon mode, control via engine-cli");
+            while (g_running) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
         }
         log("[engine] shutting down, detaching XDP");
     } catch (const std::exception& e) {
