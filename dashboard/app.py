@@ -72,7 +72,7 @@ def api_feed():
         WHEN 1 THEN 'low' WHEN 2 THEN 'low' 
         WHEN 3 THEN 'medium' WHEN 4 THEN 'high' 
         WHEN 5 THEN 'critical' ELSE 'low' END as severity, 
-      '' as detail, id FROM events
+      IFNULL(user, '') as detail, id FROM events
     UNION ALL
     SELECT 'alert' as row_type, ts, rule as title, src_ip, severity, action as detail, id FROM alerts
     UNION ALL

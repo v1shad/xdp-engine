@@ -293,7 +293,8 @@
                 evEl.innerHTML = '';
                 data.events.forEach(e => {
                     let d = document.createElement('div');
-                    d.textContent = `[${e.ts.substring(11,19)}] ${e.type}`;
+                    let u = e.user ? ' (' + e.user + ')' : '';
+                    d.textContent = `[${e.ts.substring(11,19)}] ${e.type}${u}`;
                     evEl.appendChild(d);
                 });
                 
