@@ -7,6 +7,8 @@ fi
 echo "Creating directories..."
 mkdir -p /opt/xdp-engine
 
+systemctl stop xdp-engine 2>/dev/null || true
+systemctl stop xdp-engine 2>/dev/null || true
 echo "Copying files..."
 cp engine engine-cli xdp_prog.bpf.o rules.yaml playbooks.yaml /opt/xdp-engine/
 cp xdp-engine.service /etc/systemd/system/
