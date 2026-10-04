@@ -114,7 +114,14 @@ Ensure your kernel supports XDP:
 uname -r
 ```
 
-## Build and Tests
+## Installation & Build
+
+First, clone the repository:
+```bash
+git clone https://github.com/v1shad/xdp-engine.git
+cd xdp-engine
+```
+
 
 ```bash
 make clean
