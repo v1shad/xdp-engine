@@ -63,9 +63,28 @@ sleep 1
 
 HAS_10_10_0_6=$(./engine-cli list | grep "10.10.0.6" || true)
 if [ -z "$HAS_10_10_0_6" ]; then
-    echo "NOTICE: The engine DID NOT block 10.10.0.6 after log rotation. (Inotify needs modification to handle truncation)."
+    echo "[FAIL] The engine DID NOT block 10.10.0.6 after log truncation!"
+    FAIL=1
 else
-    echo "NOTICE: The engine blocked 10.10.0.6 successfully after log rotation."
+    echo "[PASS] The engine blocked 10.10.0.6 successfully after log truncation."
+fi
+
+echo ">>> Phase 2.5: Testing Rename Log Rotation"
+mv "$AUTH_LOG" "$AUTH_LOG.1"
+touch "$AUTH_LOG"
+chown root:root "$AUTH_LOG"
+for _ in {1..6}; do
+    echo "Failed password for root from 10.10.0.7 port 22 ssh2" >> "$AUTH_LOG"
+    sleep 0.2
+done
+sleep 1
+
+HAS_10_10_0_7=$(./engine-cli list | grep "10.10.0.7" || true)
+if [ -z "$HAS_10_10_0_7" ]; then
+    echo "[FAIL] The engine DID NOT block 10.10.0.7 after rename rotation!"
+    FAIL=1
+else
+    echo "[PASS] The engine blocked 10.10.0.7 successfully after rename rotation."
 fi
 
 echo ">>> Phase 3: Final Checks"
@@ -79,7 +98,7 @@ fi
 
 # b) engine-cli list contains only expected IPs
 # Should be empty or contain only 10.10.0.6
-LIST_OUTPUT=$(./engine-cli list | grep -v "10.10.0.6" | grep -v "Currently blocked IPs" | grep -v "Total:" | grep -P "\d+\.\d+\.\d+\.\d+" || true)
+LIST_OUTPUT=$(./engine-cli list | grep -v "10.10.0.6" | grep -v "10.10.0.7" | grep -v "Currently blocked IPs" | grep -v "Total:" | grep -P "\d+\.\d+\.\d+\.\d+" || true)
 if [ -z "$LIST_OUTPUT" ]; then
     echo "[PASS] No hostile IPs caused a wrong block."
 else
