@@ -359,7 +359,7 @@ public:
 private:
     void handle_line(const std::string& line) {
         static const std::regex re{
-            R"(Failed password for (?:invalid user )?(\S+) from (\d{1,3}(?:\.\d{1,3}){3}))"};
+            R"(Failed password for (?:invalid user )?(.+?) from (\d{1,3}(?:\.\d{1,3}){3}))"};
         std::smatch m;
         if (!std::regex_search(line, m, re)) return;
         
