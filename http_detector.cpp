@@ -3,6 +3,7 @@
 #include <iostream>
 #include <arpa/inet.h>
 #include <chrono>
+#include <ctime>
 
 static bool is_valid_ip(const std::string& ip) {
     struct in_addr addr;
