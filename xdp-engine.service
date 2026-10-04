@@ -1,0 +1,22 @@
+[Unit]
+Description=XDP Intrusion Engine
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/xdp-engine.conf
+WorkingDirectory=/opt/xdp-engine/
+ExecStart=/opt/xdp-engine/engine ${XDP_INTERFACE} /opt/xdp-engine/xdp_prog.bpf.o ${XDP_LOG_FILE}
+Restart=on-failure
+
+# Hardening
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/xdp-engine/
+ReadWritePaths=/tmp/
+ReadWritePaths=/run/
+PrivateTmp=no
+
+[Install]
+WantedBy=multi-user.target
