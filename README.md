@@ -1,3 +1,5 @@
+[![Build & Test](https://github.com/v1shad/xdp-engine/actions/workflows/build.yml/badge.svg)](https://github.com/v1shad/xdp-engine/actions/workflows/build.yml)
+
 # Tier 3 Automated Intrusion Mitigation Engine
 
 ## What the Project Is
