@@ -63,6 +63,25 @@ def api_blocks_over_time():
     rows = db.execute("SELECT strftime('%Y-%m-%d %H:%M', ts) as minute, count(*) as count FROM actions WHERE action='block' AND datetime(ts) > datetime('now', '-30 minutes') GROUP BY minute ORDER BY minute").fetchall()
     return jsonify([dict(r) for r in rows])
 
+@app.route('/api/feed')
+def api_feed():
+    db = get_db()
+    query = """
+    SELECT 'event' as row_type, ts, type as title, src_ip, 
+      CASE severity 
+        WHEN 1 THEN 'low' WHEN 2 THEN 'low' 
+        WHEN 3 THEN 'medium' WHEN 4 THEN 'high' 
+        WHEN 5 THEN 'critical' ELSE 'low' END as severity, 
+      '' as detail, id FROM events
+    UNION ALL
+    SELECT 'alert' as row_type, ts, rule as title, src_ip, severity, action as detail, id FROM alerts
+    UNION ALL
+    SELECT 'action' as row_type, ts, action as title, src_ip, 'low' as severity, reason as detail, id FROM actions
+    ORDER BY ts DESC LIMIT 50
+    """
+    rows = db.execute(query).fetchall()
+    return jsonify([dict(r) for r in rows])
+
 @app.route('/api/drops_per_sec')
 def api_drops_per_sec():
     db = get_db()

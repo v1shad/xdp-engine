@@ -62,6 +62,43 @@
         th { background: #2c2c2c; color: #bb86fc; }
         .severity-high { color: #cf6679; font-weight: bold; }
         .action-block { color: #cf6679; font-weight: bold; }
+        .feed-container {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .feed-item {
+            background: #1e1e1e;
+            padding: 15px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            border-left: 5px solid transparent;
+        }
+        .feed-item.new-item {
+            animation: flash 1s ease-out;
+        }
+        @keyframes flash {
+            0% { background-color: #333333; }
+            100% { background-color: #1e1e1e; }
+        }
+        .badge {
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-weight: bold;
+            color: #000;
+            text-transform: uppercase;
+        }
+        .badge-low { background-color: #2196F3; }
+        .badge-medium { background-color: #FFC107; }
+        .badge-high { background-color: #FF9800; }
+        .badge-critical { background-color: #F44336; color: #fff; }
+        
+        .icon-event { color: #aaaaaa; }
+        .icon-alert { color: #FF9800; }
+        .icon-action { color: #03dac6; }
     </style>
 </head>
 <body>
@@ -97,20 +134,8 @@
         </div>
     </div>
 
-    <h2>Recent Alerts</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Timestamp</th>
-                <th>Rule</th>
-                <th>Source IP</th>
-                <th>Severity</th>
-                <th>Action</th>
-            </tr>
-        </thead>
-        <tbody id="alerts-body">
-        </tbody>
-    </table>
+    <h2>Live Feed</h2>
+    <div id="live-feed" class="feed-container"></div>
 
     <script src="/static/chart.js"></script>
     <script>
@@ -154,29 +179,62 @@
                 dropsChart.data.datasets[0].data = drops.map(d => d.pps);
                 dropsChart.update();
 
-                // Update Alerts Table
-                res = await fetch('/api/alerts');
-                let alerts = await res.json();
-                let tbody = document.getElementById('alerts-body');
-                tbody.innerHTML = ''; // safe to clear
-                alerts.forEach(a => {
-                    let tr = document.createElement('tr');
+                // Update Live Feed
+                res = await fetch('/api/feed');
+                let feed = await res.json();
+                let container = document.getElementById('live-feed');
+                let existingItems = new Set(Array.from(container.children).map(el => el.dataset.uid));
+                
+                container.innerHTML = ''; // Clear out old list, we will rebuild
+                feed.forEach(item => {
+                    let uid = item.row_type + '-' + item.id;
+                    let isNew = !existingItems.has(uid) && existingItems.size > 0;
                     
-                    let tdTs = document.createElement('td'); tdTs.textContent = a.ts; tr.appendChild(tdTs);
-                    let tdRule = document.createElement('td'); tdRule.textContent = a.rule; tr.appendChild(tdRule);
-                    let tdIp = document.createElement('td'); tdIp.textContent = a.src_ip; tr.appendChild(tdIp);
+                    let div = document.createElement('div');
+                    div.className = 'feed-item';
+                    if (isNew) div.classList.add('new-item');
+                    div.dataset.uid = uid;
                     
-                    let tdSev = document.createElement('td'); 
-                    tdSev.textContent = a.severity; 
-                    if(a.severity === 'high') tdSev.className = 'severity-high';
-                    tr.appendChild(tdSev);
+                    if (item.row_type === 'alert') {
+                        div.style.borderLeftColor = '#cf6679';
+                        div.style.cursor = 'pointer';
+                        // For task 2: div.onclick = () => showIncidentDetail(item.id);
+                    } else if (item.row_type === 'action') {
+                        div.style.borderLeftColor = '#03dac6';
+                    }
                     
-                    let tdAct = document.createElement('td'); 
-                    tdAct.textContent = a.action; 
-                    if(a.action === 'block') tdAct.className = 'action-block';
-                    tr.appendChild(tdAct);
+                    let timeEl = document.createElement('span');
+                    timeEl.textContent = item.ts.substring(11, 19); // just time
+                    div.appendChild(timeEl);
                     
-                    tbody.appendChild(tr);
+                    let iconEl = document.createElement('span');
+                    iconEl.className = 'icon-' + item.row_type;
+                    if (item.row_type === 'event') iconEl.textContent = '⚡';
+                    else if (item.row_type === 'alert') iconEl.textContent = '🚨';
+                    else if (item.row_type === 'action') iconEl.textContent = '🛡️';
+                    div.appendChild(iconEl);
+                    
+                    let titleEl = document.createElement('strong');
+                    titleEl.textContent = item.title;
+                    div.appendChild(titleEl);
+                    
+                    let ipEl = document.createElement('span');
+                    ipEl.textContent = item.src_ip;
+                    div.appendChild(ipEl);
+                    
+                    let sevEl = document.createElement('span');
+                    sevEl.className = 'badge badge-' + (item.severity || 'low');
+                    sevEl.textContent = item.severity;
+                    div.appendChild(sevEl);
+                    
+                    if (item.detail) {
+                        let detailEl = document.createElement('span');
+                        detailEl.textContent = item.detail;
+                        detailEl.style.color = '#888';
+                        div.appendChild(detailEl);
+                    }
+                    
+                    container.appendChild(div);
                 });
             } catch (err) {
                 console.error("Dashboard update failed", err);
