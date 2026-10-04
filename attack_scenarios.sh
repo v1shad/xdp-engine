@@ -72,7 +72,7 @@ function run_stage1() {
     wait $HPING_PID 2>/dev/null || true
     
     echo "[*] Writing 6 SSH failures for 10.10.0.2..."
-    for i in {1..6}; do
+    for _ in {1..6}; do
         echo "Failed password for root from 10.10.0.2 port 22 ssh2" >> /tmp/fake_auth.log
         sleep 0.2
     done
@@ -87,7 +87,7 @@ function run_stage2() {
     echo "=========================================================="
     sleep "$PAUSE"
     echo "[*] Writing 6 SSH failures for 10.10.0.3..."
-    for i in {1..6}; do
+    for _ in {1..6}; do
         echo "Failed password for admin from 10.10.0.3 port 22 ssh2" >> /tmp/fake_auth.log
         sleep 0.2
     done

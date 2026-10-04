@@ -6,7 +6,6 @@ if ! ip netns list | grep -q "^attacker\b" || ! ip link show veth-host >/dev/nul
     exit 1
 fi
 
-TARGET="10.10.0.1"
 AUTH_LOG="/tmp/fake_auth.log"
 ACCESS_LOG="/tmp/fake_access.log"
 
@@ -22,26 +21,27 @@ START_MEM=$(awk '/VmRSS/ {print $2}' "/proc/$ENGINE_PID/status" 2>/dev/null || e
 
 echo ">>> Phase 1: Injecting Hostile Data into Logs"
 
-head -c 100 /dev/urandom >> "$AUTH_LOG"; echo >> "$AUTH_LOG"
+{ head -c 100 /dev/urandom; echo; } >> "$AUTH_LOG"
+{ head -c 10000 /dev/zero | tr '\0' 'A'; echo; } >> "$AUTH_LOG"
+{ head -c 100000 /dev/zero | tr '\0' 'B'; echo; } >> "$ACCESS_LOG"
 
-head -c 10000 /dev/zero | tr '\0' 'A' >> "$AUTH_LOG"; echo >> "$AUTH_LOG"
-head -c 100000 /dev/zero | tr '\0' 'B' >> "$AUTH_LOG"; echo >> "$AUTH_LOG"
+{
+    printf "Failed password for \x00root from 10.10.0.2\n"
+    printf "Failed password for \xff\xfe\xfd from 10.10.0.2\n"
+    echo "Failed password for \$(id) from 10.10.0.2"
+    echo "Failed password for \`id\` from 10.10.0.2"
+    echo "Failed password for root from 10.10.0.2 ; touch /tmp/pwned"
+    echo "Failed password for root from 10.10.0.2 | nc"
+    echo "Failed password for %n%n%s%s from 10.10.0.2"
+    echo "Failed password for ' OR 1=1 -- from 10.10.0.2"
 
-printf "Failed password for \x00root from 10.10.0.2\n" >> "$AUTH_LOG"
-printf "Failed password for \xff\xfe\xfd from 10.10.0.2\n" >> "$AUTH_LOG"
+    for IP in 999.1.1.1 1.2.3 01.02.03.04 1.1.1.1.1 0.0.0.0 255.255.255.255 127.0.0.1 10.10.0.1; do
+        echo "Failed password for root from $IP port 22 ssh2"
+    done
 
-echo "Failed password for \$(id) from 10.10.0.2" >> "$AUTH_LOG"
-echo "Failed password for \`id\` from 10.10.0.2" >> "$AUTH_LOG"
-echo "Failed password for root from 10.10.0.2 ; touch /tmp/pwned" >> "$AUTH_LOG"
-echo "Failed password for root from 10.10.0.2 | nc" >> "$AUTH_LOG"
-echo "Failed password for %n%n%s%s from 10.10.0.2" >> "$AUTH_LOG"
-echo "Failed password for ' OR 1=1 -- from 10.10.0.2" >> "$AUTH_LOG"
+    printf "Failed password for root from 10.10.0.2"
+} >> "$AUTH_LOG"
 
-for IP in 999.1.1.1 1.2.3 01.02.03.04 1.1.1.1.1 0.0.0.0 255.255.255.255 127.0.0.1 10.10.0.1; do
-    echo "Failed password for root from $IP port 22 ssh2" >> "$AUTH_LOG"
-done
-
-printf "Failed password for root from 10.10.0.2" >> "$AUTH_LOG"
 sleep 0.5
 echo "" >> "$AUTH_LOG"
 
@@ -51,9 +51,9 @@ awk 'BEGIN { for(i=0; i<20000; i++) print "Accepted password for root from 10.20
 sleep 2
 
 echo ">>> Phase 2: Testing Log Rotation"
-> "$AUTH_LOG"
+: > "$AUTH_LOG"
 echo "Truncated $AUTH_LOG. Sending brute-force from 10.10.0.6..."
-for i in {1..6}; do
+for _ in {1..6}; do
     echo "Failed password for root from 10.10.0.6 port 22 ssh2" >> "$AUTH_LOG"
     sleep 0.2
 done

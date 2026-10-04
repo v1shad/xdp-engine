@@ -23,8 +23,8 @@ rm -rf /sys/fs/bpf/xdp_engine
 ip link set dev veth-host xdp off 2>/dev/null || true
 
 echo "[*] Clearing logs and reports..."
-> /tmp/fake_auth.log
-> /tmp/fake_access.log
+: > /tmp/fake_auth.log
+: > /tmp/fake_access.log
 rm -f report.md
 
 if [ "$KEEP_DB" -eq 0 ]; then
@@ -63,7 +63,7 @@ else
     
     echo "[*] Waiting for engine-cli to respond..."
     READY=0
-    for i in {1..10}; do
+    for _ in {1..10}; do
         if ./engine-cli stats >/dev/null 2>&1; then
             READY=1
             break
