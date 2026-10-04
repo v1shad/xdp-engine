@@ -50,7 +50,8 @@ PlaybookRunner::PlaybookRunner(const std::string& yaml_path, const std::string& 
     for (YAML::const_iterator it = config.begin(); it != config.end(); ++it) {
         std::string rule_name = it->first.as<std::string>();
         std::vector<std::string> steps;
-        for (const auto& step_node : it->second) {
+        YAML::Node steps_node = it->second;
+        for (const auto& step_node : steps_node) {
             std::string step_name = step_node["step"].as<std::string>();
             if (step_name != "enrich" && step_name != "block" && step_name != "notify" && step_name != "record") {
                 throw std::runtime_error("Unknown playbook step: " + step_name);
