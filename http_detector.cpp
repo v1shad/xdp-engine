@@ -29,32 +29,13 @@ HttpDetector::HttpDetector(const std::string& log_file, const RuleEngine& rule_e
 
 HttpDetector::~HttpDetector() {}
 
+#include "log_tailer.h"
+
 void HttpDetector::watch_loop(std::stop_token st) {
-    std::ifstream ifs;
-    
-    while (!st.stop_requested()) {
-        if (!ifs.is_open()) {
-            ifs.open(log_file_);
-            if (!ifs.is_open()) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
-                continue;
-            }
-            ifs.seekg(0, std::ios::end);
-        }
-        
-        std::string line;
-        while (std::getline(ifs, line)) {
-            try { process_line(line); } catch(const std::exception& e) { static auto last_warn = std::chrono::steady_clock::time_point{}; auto now = std::chrono::steady_clock::now(); if (now - last_warn > std::chrono::seconds(5)) { std::cerr << "[WARN] Exception in http_detector: " << e.what() << "\n"; last_warn = now; } }
-        }
-        
-        if (ifs.eof()) {
-            ifs.clear();
-        } else {
-            // maybe an error, reopen
-            ifs.close();
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
+    LogTailer tailer(log_file_, [this](const std::string& line) {
+        try { process_line(line); } catch(const std::exception& e) { static auto last_warn = std::chrono::steady_clock::time_point{}; auto now = std::chrono::steady_clock::now(); if (now - last_warn > std::chrono::seconds(5)) { std::cerr << "[WARN] Exception in http_detector: " << e.what() << "\n"; last_warn = now; } }
+    });
+    tailer.run(st);
 }
 
 void HttpDetector::process_line(const std::string& line) {

@@ -183,3 +183,89 @@ TEST(TextUtilTest, LengthCap) {
 TEST(TextUtilTest, EmptyString) {
     EXPECT_EQ(sanitize_utf8(""), "");
 }
+
+#include "../log_tailer.h"
+#include <fstream>
+#include <filesystem>
+#include <mutex>
+#include <vector>
+
+TEST(LogTailerTest, RotationAndTruncation) {
+    std::string test_file = "/tmp/test_tailer.log";
+    std::filesystem::remove(test_file);
+
+    std::vector<std::string> lines_read;
+    std::mutex mtx;
+
+    std::jthread tailer_thread([&](std::stop_token st) {
+        LogTailer tailer(test_file, [&](const std::string& line) {
+            std::lock_guard<std::mutex> lock(mtx);
+            lines_read.push_back(line);
+        });
+        tailer.run(st);
+    });
+
+    auto wait_for_lines = [&](size_t expected) {
+        for (int i = 0; i < 20; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::lock_guard<std::mutex> lock(mtx);
+            if (lines_read.size() == expected) return true;
+        }
+        return false;
+    };
+
+    // 1. File never created initially (no crash, tailer should keep trying)
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        EXPECT_EQ(lines_read.size(), 0);
+    }
+
+    // 2. Append (detected)
+    {
+        std::ofstream out(test_file);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    {
+        std::ofstream out(test_file, std::ios::app);
+        out << "very_long_line_number_1\n";
+    }
+    EXPECT_TRUE(wait_for_lines(1));
+
+    // 3. Truncate and append (detected)
+    {
+        std::ofstream out(test_file, std::ios::trunc);
+        out << "line2\n";
+    }
+    EXPECT_TRUE(wait_for_lines(2));
+
+    // 4. Rename and recreate (detected)
+    std::filesystem::rename(test_file, "/tmp/test_tailer.log.old");
+    {
+        std::ofstream out(test_file);
+        out << "line3\n";
+    }
+    EXPECT_TRUE(wait_for_lines(3));
+
+    // 5. Delete and recreate (detected)
+    std::filesystem::remove(test_file);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    {
+        std::ofstream out(test_file);
+        out << "line4\n";
+    }
+    EXPECT_TRUE(wait_for_lines(4));
+
+    tailer_thread.request_stop();
+    tailer_thread.join();
+
+    EXPECT_EQ(lines_read.size(), 4);
+    if (lines_read.size() == 4) {
+        EXPECT_EQ(lines_read[0], "very_long_line_number_1");
+        EXPECT_EQ(lines_read[1], "line2");
+        EXPECT_EQ(lines_read[2], "line3");
+        EXPECT_EQ(lines_read[3], "line4");
+    }
+    std::filesystem::remove(test_file);
+    std::filesystem::remove("/tmp/test_tailer.log.old");
+}

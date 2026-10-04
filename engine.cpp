@@ -337,20 +337,16 @@ private:
 };
 
 /* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
+#include "log_tailer.h"
+
 class SshDetector {
 public:
     SshDetector(std::string path, EventCallback cb)
     : path_{std::move(path)}, cb_{std::move(cb)} {}
 
     void run(std::stop_token st) {
-        std::ifstream in{path_};
-        if (!in) { log("[error] cannot open log: " + path_); return; }
-        in.seekg(0, std::ios::end);
-        std::string line;
-        while (!st.stop_requested()) {
-            if (std::getline(in, line)) handle_line(line);
-            else { in.clear(); std::this_thread::sleep_for(200ms); }
-        }
+        LogTailer tailer(path_, [this](const std::string& line) { handle_line(line); });
+        tailer.run(st);
     }
 
 private:

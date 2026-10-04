@@ -21,6 +21,7 @@ public:
         ino_t last_inode = 0;
         dev_t last_dev = 0;
         off_t last_offset = 0;
+        bool initial_open = true;
 
         auto reopen_file = [&]() {
             in.close();
@@ -43,7 +44,7 @@ public:
                     if (in.is_open()) {
                         last_inode = st_info.st_ino;
                         last_dev = st_info.st_dev;
-                        in.seekg(0, std::ios::end);
+                        if (initial_open) { in.seekg(0, std::ios::end); initial_open = false; } else { std::cout << "[tail] rotation detected on " << path_ << "\n"; }
                         last_offset = in.tellg();
                     }
                 } else {
