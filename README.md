@@ -45,35 +45,27 @@ Detect from anywhere, enforce at kernel speed, respond with guardrails, record e
 
 ## Architecture
 
-```text
-       [External Attacker]
-                | 1. Malicious Traffic
-                v
-+=============================================+
-|                 KERNEL SPACE                |
-|  [Network Interface]                        |
-|          |                                  |
-|          v                                  |
-|  [xdp_prog.bpf.c] <======+ 5. BPF Maps      |
-|          | (Drop / Pass) |  - blocked_ips   |
-|          |               |  - allowed_ips   |
-+==========|===============|==================+
-           |               |
-           | 2. Logs       | 4. Map Updates
-           v               |
-+=============================================+
-|                 USER SPACE                  |
-|   [Target App] (e.g., SSH, Nginx)           |
-|          |                                  |
-|   [LogTailer] -> [HttpDetector/SshDetector] |
-|          |                                  |
-|   [RuleEngine] (Evaluates rules.yaml)       |
-|          |                                  |
-|   [PlaybookRunner] -----------------+       |
-|          |                          |       |
-|          v                          v       |
-|    [SQLite DB] <---------- [engine-cli]     |
-+=============================================+
+```mermaid
+flowchart TD
+    Attacker((External Attacker)) -->|1. Malicious Traffic| NIC
+
+    subgraph Kernel Space
+        NIC[Network Interface] --> XDP[xdp_prog.bpf.c]
+        XDP -->|Drop / Pass| Stack[Networking Stack]
+        BPFMaps[(BPF Maps\nblocked_ips, allowed_ips)] -.->|5. Read via O_1 lookup| XDP
+    end
+
+    Stack -->|2. Logs Traffic| App
+
+    subgraph User Space
+        App[Target App\ne.g., SSH, Nginx] -->|Appends to Log| Tailer[LogTailer]
+        Tailer --> Detectors[HttpDetector / SshDetector]
+        Detectors -->|Parsed Events| RuleEngine[RuleEngine\nEvaluates rules.yaml]
+        RuleEngine -->|Alerts| Playbook[PlaybookRunner]
+        Playbook -->|4. Map Updates| BPFMaps
+        Playbook -->|Records Action| SQLite[(SQLite DB)]
+        CLI[engine-cli] -->|Manual Commands| SQLite
+    end
 ```
 
 | Component | File | Description |
