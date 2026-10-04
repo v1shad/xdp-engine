@@ -27,21 +27,21 @@ echo ">>> Phase 1: Injecting Hostile Data into Logs"
 { head -c 100000 /dev/zero | tr '\0' 'B'; echo; } >> "$ACCESS_LOG"
 
 {
-    printf "Failed password for \x00root from 10.10.0.2\n"
+    printf "Failed password for \x00root from 10.20.0.1\n"
     echo ">>> [Regression] Injecting known crashing UTF-8 sequence..."
-    printf "Failed password for \xff\xfe\xfd from 10.10.0.2\n"
-    echo "Failed password for \$(id) from 10.10.0.2"
-    echo "Failed password for \`id\` from 10.10.0.2"
-    echo "Failed password for root from 10.10.0.2 ; touch /tmp/pwned"
-    echo "Failed password for root from 10.10.0.2 | nc"
-    echo "Failed password for %n%n%s%s from 10.10.0.2"
-    echo "Failed password for ' OR 1=1 -- from 10.10.0.2"
+    printf "Failed password for \xff\xfe\xfd from 10.20.0.2\n"
+    echo "Failed password for \$(id) from 10.20.0.3"
+    echo "Failed password for \`id\` from 10.20.0.4"
+    echo "Failed password for root from 10.20.0.5 ; touch /tmp/pwned"
+    echo "Failed password for root from 10.20.0.6 | nc"
+    echo "Failed password for %n%n%s%s from 10.20.0.7"
+    echo "Failed password for ' OR 1=1 -- from 10.20.0.8"
 
     for IP in 999.1.1.1 1.2.3 01.02.03.04 1.1.1.1.1 0.0.0.0 255.255.255.255 127.0.0.1 10.10.0.1; do
         echo "Failed password for root from $IP port 22 ssh2"
     done
 
-    printf "Failed password for root from 10.10.0.2"
+    printf "Failed password for root from 10.20.0.9"
 } >> "$AUTH_LOG"
 
 sleep 0.5
