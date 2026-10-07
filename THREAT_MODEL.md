@@ -15,7 +15,7 @@ We assume the attacker can:
 - Influence log file contents by causing target applications to log attacker-controlled strings.
 
 ## Trust Boundaries
-1. **Log Files (`/tmp/fake_auth.log`)**: Untrusted. Attackers control usernames and User-Agent strings. The engine parses this data securely without passing it to a shell.
+1. **Log Files (`/var/log/secure or /var/log/nginx/access.log`)**: Untrusted. Attackers control usernames and User-Agent strings. The engine parses this data securely without passing it to a shell.
 2. **The Control Socket (`/run/xdp_engine.sock`)**: Trusted but secured. Boundary strictly enforced via UNIX permissions (`0600`) and `SO_PEERCRED` checks ensuring only `root` can send commands.
 3. **The Web Dashboard**: Read-only boundary. The dashboard runs locally and pulls state directly from a read-only connection to SQLite. Attacker data is safely rendered as raw text, neutering XSS payloads.
 4. **Pinned BPF Maps**: Kernel boundary. Only the root-privileged C++ user space engine can write to these maps to dictate packet blocking.
