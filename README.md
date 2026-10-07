@@ -54,52 +54,105 @@ make
 make test
 ```
 
-## Two-Laptop Live Showcase
+## Two-Laptop Live Showcase (Presentation Script)
 
-This guide demonstrates XDP-Engine blocking real attacks across a real network using two computers.
+This guide is designed as a copy-pasteable script to demonstrate XDP-Engine blocking real attacks across a network using two computers.
 
-### [MY LAPTOP] Preparation
-Ensure your SSH server and Nginx (if applicable) are running. Start the read-only dashboard:
+**Prerequisites:** 
+*   Find your interface (e.g., `wlp8s0` or `eth0`) and your IP address (`ip a`).
+*   Ensure SSH and Nginx are running (`sudo systemctl start sshd nginx`).
+*   Create a dummy password file on the attacker laptop: `echo -e "123456\npassword\nadmin123" > passwords.txt`
+
+---
+
+### Phase 1: Start the Defense (Detect Mode)
+
+**[MY LAPTOP]** Open Terminal 1 (Dashboard):
 ```bash
 cd dashboard
 python3 app.py
 ```
-Open `http://127.0.0.1:5000/?showcase=1` in your browser.
+*Open `http://127.0.0.1:5000/?showcase=1` in your browser to view the live dashboard.*
 
-Start the engine. It runs preflight checks, auto-allowlists your gateway, and begins in `DETECT` mode:
+**[MY LAPTOP]** Open Terminal 2 (Engine):
 ```bash
-[sudo] ./engine wlan0
+sudo ./engine wlp8s0
 ```
-*(Replace `wlan0` with your active network interface).*
+*(Replace `wlp8s0` with your active interface. Notice the Preflight checks passing and the engine starting in `DETECT` mode).*
 
-### [FRIEND LAPTOP] Attack Phase (Detect Mode)
-Have your friend attempt to SSH into your laptop with the wrong password multiple times.
-```bash
-hydra -l admin -P passwords.txt ssh://<YOUR_IP>
-```
-On **[MY LAPTOP]**, the engine will log `[DETECTED] would block <IP> (detect mode)` but the connection will remain open. The dashboard will show the attack.
+---
 
-### [MY LAPTOP] Enforce Mode
-Enable kernel enforcement to actively drop the attacker:
+### Phase 2: Application Attacks & Reconnaissance
+
+**[FRIEND LAPTOP]** Attack 1: Network Reconnaissance (Nmap Scan)
 ```bash
-[sudo] ./engine-cli mode enforce
+nmap -p 1-1000 -T4 <MY_IP>
 ```
 
-### [FRIEND LAPTOP] Attack Phase (Enforce Mode)
-Have your friend repeat the SSH attack.
-On **[MY LAPTOP]**, the engine will log `[BLOCKED]` and insert the IP into the eBPF map. 
-On **[FRIEND LAPTOP]**, the SSH connection will instantly hang and time out, as the kernel drops the packets before they reach user space.
-
-### [MY LAPTOP] Verification & Reset
-Verify the kernel drops using `tcpdump` (you will see the attacker's packets arriving, but they receive no response):
+**[FRIEND LAPTOP]** Attack 2: Web Exploit (SQL Injection)
 ```bash
-[sudo] tcpdump -n -i wlan0 host <FRIEND_IP>
+curl "http://<MY_IP>/?id=1' OR '1'='1"
 ```
 
-When finished, reset the engine and remove the blocks:
+**[FRIEND LAPTOP]** Attack 3: SSH Brute Force
 ```bash
-[sudo] ./engine reset
-[sudo] ./engine cleanup wlan0
+hydra -l admin -P passwords.txt ssh://<MY_IP>
+```
+
+**[MY LAPTOP]** Observation:
+Look at your engine terminal and dashboard. You will see `[SCAN]`, `[WEB]`, and `[AUTH]` events flowing in. The engine will log `[DETECTED] would block <FRIEND_IP> (detect mode)`. The attacker is *not* blocked yet, because we are safely observing.
+
+---
+
+### Phase 3: Switch to Enforce Mode
+
+**[MY LAPTOP]** Open Terminal 3 (Control):
+```bash
+sudo ./engine-cli mode enforce
+```
+*Watch the Dashboard mode badge instantly pulse Red and switch to ENFORCE.*
+
+---
+
+### Phase 4: The Kernel Drop
+
+**[FRIEND LAPTOP]** Repeat the SSH Attack:
+```bash
+hydra -l admin -P passwords.txt ssh://<MY_IP>
+```
+**[MY LAPTOP]** The engine will instantly log `[BLOCKED]` and the IP appears on the dashboard's active block list.
+
+**[FRIEND LAPTOP]** The SSH connection completely hangs. The kernel is now dropping their packets at the network card level.
+
+**[MY LAPTOP]** Prove the packets are dying in the kernel using tcpdump:
+```bash
+sudo tcpdump -n -i wlp8s0 host <FRIEND_IP>
+```
+*You will see the attacker's packets arriving, but your machine sends zero responses back. The OS doesn't even know they exist.*
+
+---
+
+### Phase 5: The Volumetric DDoS (SYN Flood)
+
+**[FRIEND LAPTOP]** Launch a SYN Flood:
+```bash
+sudo hping3 -S -p 80 --flood <MY_IP>
+```
+
+**[MY LAPTOP]** The dashboard's "Total Packets Dropped" speedometer will skyrocket. The engine will log `[FLOOD]` and `[DROPPING]` with massive rate statistics. Despite millions of packets hitting your machine, your CPU remains idle because XDP kills them in the driver.
+
+---
+
+### Phase 6: Teardown
+
+**[MY LAPTOP]** Remove the block, or reset the engine entirely:
+```bash
+# Unblock just your friend:
+sudo ./engine-cli unblock <FRIEND_IP>
+
+# Or completely wipe and reset the engine state:
+sudo ./engine reset
+sudo ./engine cleanup wlp8s0
 ```
 
 ## Configuration
