@@ -314,8 +314,8 @@ public:
         if (int err = bpf_object__load(obj_.get()))
             throw std::runtime_error("load failed: " + std::string{std::strerror(-err)});
 
-        bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_drop");
-        if (!prog) throw std::runtime_error("program xdp_drop not found");
+        bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_firewall");
+        if (!prog) throw std::runtime_error("program xdp_firewall not found");
 
         link_.reset(bpf_program__attach_xdp(prog, ifindex));
         if (!link_) throw std::runtime_error("attach failed: " + std::string{std::strerror(errno)});
@@ -675,7 +675,7 @@ int main(int argc, char** argv) {
             Event e;
             e.ts_iso = get_iso_time_str();
             e.source = "xdp";
-            e.type = (d->reason == REASON_RATELIMIT) ? "rate_limit_exceeded" : "xdp_drop";
+            e.type = (d->reason == REASON_RATELIMIT) ? "rate_limit_exceeded" : "xdp_firewall";
             e.src_ip = ip_to_string(d->src_ip);
             e.severity = 4;
             (*on_event_ptr)(e);
