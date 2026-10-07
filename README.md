@@ -17,12 +17,12 @@ Detect from anywhere, enforce at kernel speed, respond with guardrails, record e
 
 ```mermaid
 flowchart TD
-    A[Log lines & Network] --> B(Log Tailer & eBPF Events)
-    B --> C{Rule Engine}
-    C -- Match --> D(Playbook Runner)
-    D -- Approve / Auto --> E[SQLite Database]
-    D -- Enforce --> F(eBPF Map Update)
-    F --> G[XDP_DROP]
+    A[Log lines & Network] --> B(Detectors & RingBuffer<br><i>http_detector.cpp, log_tailer.h</i>)
+    B --> C{Rule Engine<br><i>rule_engine.cpp<br>rules.yaml</i>}
+    C -- Match --> D(Playbook Runner<br><i>playbook_runner.cpp<br>playbooks.yaml</i>)
+    D -- Audit Trail --> E[(SQLite Database)<br><i>storage.cpp -> engine.db</i>]
+    D -- Enforce --> F(eBPF Map Update<br><i>engine.cpp</i>)
+    F --> G[XDP_DROP<br><i>xdp_prog.bpf.c</i>]
 ```
 
 ### Components
