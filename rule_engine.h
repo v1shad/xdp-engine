@@ -60,6 +60,7 @@ public:
     RuleEngine(const std::string& yaml_path);
     std::vector<Alert> process(const Event& e);
     const std::vector<RuleDef>& get_rules() const { return rules_; }
+    void override_rules(int threshold, int window);
 
 private:
     std::vector<RuleDef> rules_;

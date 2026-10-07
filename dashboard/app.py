@@ -1,6 +1,6 @@
 import sqlite3
 import os
-from flask import Flask, render_template, jsonify, g
+from flask import Flask, render_template, jsonify, g, request
 import time
 
 app = Flask(__name__)
@@ -25,6 +25,7 @@ def close_connection(exception):
 
 @app.route('/')
 def index():
+    if request.args.get('showcase') == '1': return render_template('showcase.html')
     return render_template('index.html')
 
 @app.route('/api/summary')

@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>XDP-Engine Showcase</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <meta http-equiv="refresh" content="1">
+</head>
+<body class="bg-gray-900 text-white font-mono h-screen overflow-hidden flex flex-col">
+    <div class="p-6 flex justify-between items-center border-b border-gray-700 bg-gray-800 shadow-md">
+        <h1 class="text-3xl font-bold tracking-widest text-blue-400">XDP-ENGINE <span class="text-gray-400 text-xl font-normal">LIVE SHOWCASE</span></h1>
+        <div class="flex items-center space-x-6">
+            <div id="modeBadge" class="px-6 py-2 rounded-full font-bold text-xl uppercase animate-pulse shadow-[0_0_15px_rgba(255,255,255,0.3)] bg-gray-700">Loading Mode...</div>
+        </div>
+    </div>
+    
+    <div class="flex-1 flex p-6 space-x-6 overflow-hidden">
+        <div class="w-1/3 flex flex-col space-y-6">
+            <div class="bg-gray-800 p-6 rounded-lg border-2 border-gray-700 shadow-xl relative overflow-hidden">
+                <div class="absolute inset-0 bg-red-900/10 pointer-events-none"></div>
+                <h2 class="text-gray-400 uppercase tracking-widest mb-4">Total Packets Dropped</h2>
+                <div id="dropCounter" class="text-7xl font-bold text-red-500 font-mono">0</div>
+                <div id="dropRate" class="text-2xl text-red-400/80 mt-2 font-mono">0 / sec</div>
+            </div>
+            
+            <div class="bg-gray-800 p-6 rounded-lg border-2 border-gray-700 shadow-xl flex-1 overflow-auto">
+                <h2 class="text-gray-400 uppercase tracking-widest mb-4">Active Blocks / Attack Cards</h2>
+                <div id="attackCards" class="space-y-4">
+                    <!-- Cards injected here -->
+                </div>
+            </div>
+        </div>
+        
+        <div class="w-2/3 bg-gray-800 rounded-lg border-2 border-gray-700 shadow-xl flex flex-col overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-700 bg-gray-800/80">
+                <h2 class="text-gray-400 uppercase tracking-widest">Live Engine Feed</h2>
+            </div>
+            <div class="flex-1 overflow-auto p-4 bg-black/40 font-mono text-sm leading-relaxed" id="liveFeed">
+                <!-- Feed lines injected here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Use standard fetch without meta-refresh for smoother updates, but meta-refresh works as a fallback.
+        // We actually removed meta-refresh from head and use setInterval below.
+        document.querySelector('meta[http-equiv="refresh"]').remove();
+        
+        async function update() {
+            try {
+                const pRes = await fetch('/api/panels');
+                const pData = await pRes.json();
+                
+                const mode = pData.health.xdp_mode;
+                const badge = document.getElementById('modeBadge');
+                if(mode.toUpperCase() === 'ENFORCE') {
+                    badge.textContent = 'ENFORCE MODE';
+                    badge.className = 'px-6 py-2 rounded-full font-bold text-xl bg-red-600 text-white shadow-[0_0_20px_rgba(220,38,38,0.7)] animate-none';
+                } else {
+                    badge.textContent = 'DETECT MODE';
+                    badge.className = 'px-6 py-2 rounded-full font-bold text-xl bg-blue-600 text-white shadow-[0_0_20px_rgba(37,99,235,0.7)]';
+                }
+                
+                const sRes = await fetch('/api/summary');
+                const sData = await sRes.json();
+                document.getElementById('dropCounter').textContent = sData.total_drops.toLocaleString();
+                
+                const rRes = await fetch('/api/drops_per_sec');
+                const rData = await rRes.json();
+                if(rData.length > 0) {
+                    document.getElementById('dropRate').textContent = rData[rData.length-1].pps.toFixed(0) + ' / sec';
+                }
+                
+                const cards = document.getElementById('attackCards');
+                cards.innerHTML = '';
+                if(pData.active_blocks.length === 0) {
+                    cards.innerHTML = '<div class="text-gray-500 italic p-4 text-center">Idle. Waiting for attacks...</div>';
+                } else {
+                    pData.active_blocks.forEach(b => {
+                        cards.innerHTML += `
+                            <div class="bg-gray-900 border-l-4 border-red-500 p-4 rounded shadow-lg">
+                                <div class="flex justify-between items-center mb-2">
+                                    <span class="font-bold text-lg text-red-400">${b.ip}</span>
+                                    <span class="text-xs px-2 py-1 bg-red-900/50 text-red-300 rounded uppercase">BLOCKED</span>
+                                </div>
+                                <div class="text-gray-400 text-sm">Cooldown: <span class="text-white font-mono">${b.remain}s</span></div>
+                            </div>
+                        `;
+                    });
+                }
+                
+                const fRes = await fetch('/api/feed');
+                const fData = await fRes.json();
+                const feed = document.getElementById('liveFeed');
+                feed.innerHTML = '';
+                fData.forEach(item => {
+                    let color = 'text-gray-400';
+                    if(item.row_type === 'alert') color = 'text-yellow-400';
+                    if(item.row_type === 'action' && item.title === 'block') color = 'text-red-400';
+                    if(item.row_type === 'action' && item.title === 'detected') color = 'text-blue-400';
+                    feed.innerHTML += `<div class="mb-1 ${color}"><span class="text-gray-500 opacity-70">[${item.ts.replace('T',' ').replace('Z','')}]</span> <span class="uppercase tracking-widest">[${item.row_type}]</span> ${item.title} - ${item.src_ip} ${item.detail}</div>`;
+                });
+            } catch(e) { console.error(e); }
+        }
+        
+        setInterval(update, 1000);
+        update();
+    </script>
+</body>
+</html>

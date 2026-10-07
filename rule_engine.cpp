@@ -131,3 +131,12 @@ std::vector<Alert> RuleEngine::process(const Event& e) {
     }
     return generated_alerts;
 }
+
+void RuleEngine::override_rules(int threshold, int window) {
+    for (auto& r : rules_) {
+        if (r.type == "threshold") {
+            if (threshold > 0) r.threshold = threshold;
+            if (window > 0) r.window = std::chrono::seconds(window);
+        }
+    }
+}

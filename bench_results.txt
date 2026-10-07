@@ -1,0 +1,14 @@
+
+=================================================================================================
+                             BENCHMARK RESULTS (AVERAGE OF 3 RUNS)                               
+=================================================================================================
+SCENARIO           | RX PKTS/SEC  | DROP PKTS/SEC | SYS CPU % | SYS SOFT% | MAX CORE% | CORE%/1kPPS 
+-------------------------------------------------------------------------------------------------
+1. BASELINE        | 220252       | 0             | 5         | 3         | 41        | 0.186       
+2. IPTABLES_FILTER | 356405       | 389899        | 5         | 3         | 32        | 0.090       
+3. IPTABLES_RAW    | 663597       | 728995        | 5         | 1         | 35        | 0.053       
+4. XDP (xdp)       | 543195       | 495016        | 5         | 1         | 31        | 0.057       
+=================================================================================================
+* RX pps = flood arrival rate, a proxy for per-packet cost.
+  Counters come from different sources; ~±5% skew is expected.
+  Veth is virtual; results on real NICs were not measured.

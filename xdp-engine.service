@@ -1,22 +1,14 @@
 [Unit]
-Description=XDP Intrusion Engine
+Description=XDP Engine (Firewall & SOAR)
 After=network.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/xdp-engine.conf
-WorkingDirectory=/opt/xdp-engine/
-ExecStart=/opt/xdp-engine/engine ${XDP_INTERFACE} /opt/xdp-engine/xdp_prog.bpf.o ${XDP_LOG_FILE}
+WorkingDirectory=/opt/xdp-engine
+# By default, runs in DETECT mode on eth0. Add --enforce to drop traffic.
+ExecStart=/opt/xdp-engine/engine eth0
+ExecStop=/opt/xdp-engine/engine cleanup eth0
 Restart=on-failure
-
-# Hardening
-NoNewPrivileges=yes
-ProtectHome=yes
-ProtectSystem=strict
-ReadWritePaths=/opt/xdp-engine/
-ReadWritePaths=/tmp/
-ReadWritePaths=/run/
-PrivateTmp=no
 
 [Install]
 WantedBy=multi-user.target

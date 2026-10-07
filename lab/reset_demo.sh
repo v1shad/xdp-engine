@@ -23,20 +23,21 @@ rm -rf /sys/fs/bpf/xdp_engine
 ip link set dev veth-host xdp off 2>/dev/null || true
 
 echo "[*] Clearing logs and reports..."
-: > /tmp/fake_auth.log
-: > /tmp/fake_access.log
+chown root:root ../tmp/fake_auth.log ../tmp/fake_access.log 2>/dev/null || true
+: > ../tmp/fake_auth.log
+: > ../tmp/fake_access.log
 rm -f report.md
 
 if [ "$KEEP_DB" -eq 0 ]; then
-    if [ -f "/opt/xdp-engine/engine.db" ]; then
+    if [ -f "/opt/xdp-engin../engine.db" ]; then
         TS=$(date +%s)
-        mv /opt/xdp-engine/engine.db "/opt/xdp-engine/engine.db.backup.$TS"
+        mv /opt/xdp-engin../engine.db "/opt/xdp-engin../engine.db.backup.$TS"
         echo "[*] Backed up DB to engine.db.backup.$TS"
     fi
     # Need to touch it so permissions are right for restorecon
-    touch /opt/xdp-engine/engine.db
-    chmod 666 /opt/xdp-engine/engine.db
-    restorecon -v /opt/xdp-engine/engine.db >/dev/null 2>&1 || true
+    touch /opt/xdp-engin../engine.db
+    chmod 666 /opt/xdp-engin../engine.db
+    restorecon -v /opt/xdp-engin../engine.db >/dev/null 2>&1 || true
 fi
 
 echo "[*] Recreating lab network..."
@@ -56,7 +57,7 @@ fi
 
 if [ "$MANUAL" -eq 1 ]; then
     echo "[*] Manual mode requested. Start the engine with:"
-    echo "    sudo /opt/xdp-engine/engine veth-host /opt/xdp-engine/xdp_prog.bpf.o /tmp/fake_auth.log"
+    echo "    sudo /opt/xdp-engin../engine veth-host ../xdp_prog.bpf.o ../tmp/fake_auth.log"
 else
     echo "[*] Starting xdp-engine service..."
     systemctl start xdp-engine
@@ -64,7 +65,7 @@ else
     echo "[*] Waiting for engine-cli to respond..."
     READY=0
     for _ in {1..10}; do
-        if ./engine-cli stats >/dev/null 2>&1; then
+        if .../engine-cli stats >/dev/null 2>&1; then
             READY=1
             break
         fi

@@ -1,34 +1,20 @@
 #!/bin/bash
-if [ "$EUID" -ne 0 ]; then
-  echo "Please run as root"
-  exit 1
-fi
+set -e
 
-echo "Creating directories..."
+echo "Building..."
+make clean && make
+
+echo "Installing to /opt/xdp-engine..."
 mkdir -p /opt/xdp-engine
+cp engine /opt/xdp-engine/
+cp engine-cli /opt/xdp-engine/
+cp xdp_prog.bpf.o /opt/xdp-engine/
+cp rules.yaml /opt/xdp-engine/
+cp playbooks.yaml /opt/xdp-engine/
 
-systemctl stop xdp-engine 2>/dev/null || true
-systemctl stop xdp-engine 2>/dev/null || true
-echo "Copying files..."
-cp engine engine-cli xdp_prog.bpf.o rules.yaml playbooks.yaml /opt/xdp-engine/
+echo "Installing systemd service..."
 cp xdp-engine.service /etc/systemd/system/
-cp xdp-engine.conf /etc/
-
-echo "Setting permissions..."
-chmod 755 /opt/xdp-engine/engine /opt/xdp-engine/engine-cli
-chmod 644 /etc/systemd/system/xdp-engine.service
-chmod 644 /etc/xdp-engine.conf
-
-# Initialize an empty DB if not present so restorecon works on it
-if [ ! -f /opt/xdp-engine/engine.db ]; then
-    touch /opt/xdp-engine/engine.db
-fi
-chmod 666 /opt/xdp-engine/engine.db
-
-# SELinux requires binaries running as systemd services to have the correct context (bin_t or similar).
-# restorecon resets the file contexts to the system default, allowing systemd to transition to the right domain.
-echo "Running restorecon for SELinux..."
-restorecon -Rv /opt/xdp-engine/
-
 systemctl daemon-reload
-echo "Install complete!"
+
+echo "Done. Edit /etc/systemd/system/xdp-engine.service if you want to change flags (like --enforce)."
+echo "Start with: systemctl start xdp-engine"

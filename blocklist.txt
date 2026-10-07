@@ -1,4 +1,0 @@
-# Example public blocklist
-# We will use 10.10.0.99 as our bad ip
-10.10.0.99
-# End

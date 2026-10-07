@@ -1,90 +1,150 @@
-// engine.cpp — user-space half of the Tier 3 Automated Intrusion Mitigation Engine
-#include <arpa/inet.h>      // inet_pton / inet_ntop (text IP <-> binary IP)
-#include <net/if.h>         // if_nametoindex ("eth0" -> interface number)
-#include <signal.h>         // sigaction
-#include <bpf/bpf.h>        // bpf_map_update_elem, bpf_map_lookup_elem, ... (syscall wrappers)
-#include <bpf/libbpf.h>     // bpf_object__open_file, bpf_program__attach_xdp, ...
-#include "common.h"
-#include "http_detector.h"
-#include "text_util.h"
-
+#include <iostream>
+#include <string>
+#include <vector>
+#include <thread>
 #include <atomic>
-#include <cerrno>
-#include <unistd.h>
-#include <linux/if_link.h>
-#include <sys/stat.h>
-#include <sys/socket.h>
-#include <sys/un.h>
 #include <chrono>
-#include <condition_variable>
+#include <regex>
+#include <fstream>
+#include <csignal>
+#include <unordered_set>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <filesystem>
+#include <dirent.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/utsname.h>
+#include <sys/un.h>
+#include <ifaddrs.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <bpf/bpf.h>
+#include <bpf/libbpf.h>
+#include <net/if.h>
+#include <linux/if_link.h>
+#include <sys/socket.h>
 #include <cstdint>
 #include <cstring>
 #include <deque>
-#include <fstream>
-#include <iostream>
-#include <memory>
-#include <mutex>
-#include <numeric>
-#include <optional>
-#include <regex>
-#include <sstream>
 #include <stdexcept>
 #include <stop_token>
-#include <string>
 #include <string_view>
-#include <thread>
 #include <type_traits>
 #include <unordered_map>
-#include <unordered_set>
-#include <vector>
+#include <numeric>
+
+#include "common.h"
 #include "event.h"
 #include "rule_engine.h"
 #include "storage.h"
 #include "playbook_runner.h"
 #include "notifier.h"
-
-using namespace std::chrono_literals;   // enables 200ms, 60s literals
-using Clock = std::chrono::steady_clock; // monotonic clock: immune to system time changes
-
-using EventCallback = std::function<void(const Event&)>;
-
-/* ---------- tiny thread-safe logger (two threads print: avoid garbled output) ---------- */
-static void log(const std::string& msg) {
-    static std::mutex io_mutex;
-    std::lock_guard lock{io_mutex};      // CTAD: template argument deduced automatically
-    std::cout << msg << std::endl;
-}
-
-/* ---------- RAII wrappers: C resources -> automatic cleanup ---------- */
-struct ObjDeleter  { void operator()(bpf_object* o) const noexcept { if (o) bpf_object__close(o); } };
-struct LinkDeleter { void operator()(bpf_link*   l) const noexcept { if (l) bpf_link__destroy(l); } };
-struct RingDeleter { void operator()(ring_buffer* r) const noexcept { if (r) ring_buffer__free(r); } };
-using ObjPtr  = std::unique_ptr<bpf_object, ObjDeleter>;
-using LinkPtr = std::unique_ptr<bpf_link,  LinkDeleter>;
-using RingBufPtr = std::unique_ptr<ring_buffer, RingDeleter>;
-
-/* ---------- C++20 concept: only raw-copyable types may cross into the kernel ---------- */
-template <typename T>
-concept KernelPod = std::is_trivially_copyable_v<T>;   // the kernel memcpy's these bytes
-
-template <KernelPod K, KernelPod V>
-bool map_update(int fd, const K& key, const V& value) {
-    return bpf_map_update_elem(fd, &key, &value, BPF_ANY) == 0;  // BPF_ANY = create or overwrite
-}
-
-/* ---------- IP helpers ---------- */
+#include "http_detector.h"
+#include "log_tailer.h"
+#include "text_util.h"
 #include "utils.h"
+
+using namespace std::chrono_literals;
+
+static bool use_color = true;
+static std::atomic<bool> g_running{true};
+extern "C" void on_signal(int) { g_running = false; }
+
+std::string get_iso_time_str() {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
+    return std::string(buf);
+}
+
+void print_log(std::string tag, const std::string& msg, const std::string& color_code = "") {
+    std::string reset = use_color ? "\x1b[0m" : "";
+    std::string color = use_color ? color_code : "";
+    while (tag.length() < 10) tag += " ";
+    std::cout << get_iso_time_str() << " " << color << tag << reset << " " << msg << "\n";
+}
+void log_info(const std::string& msg) { print_log("[INFO]", msg); }
+void log_warn(const std::string& msg) { print_log("[WARN]", msg, "\x1b[33m"); }
+void log(const std::string& msg) { log_info(msg); } // Compatibility
 
 std::string ip_to_string(std::uint32_t ip_net) {
     char buf[INET_ADDRSTRLEN]{};
-    in_addr addr{.s_addr = ip_net};          // C++20 designated initializer
+    in_addr addr{.s_addr = ip_net};
     inet_ntop(AF_INET, &addr, buf, sizeof buf);
     return buf;
 }
 
-constexpr std::chrono::seconds DEFAULT_BLOCK_DURATION{600}; // 10 minutes
+std::optional<std::uint32_t> parse_ipv4_local(const std::string& text) {
+    in_addr addr{};
+    if (inet_pton(AF_INET, text.c_str(), &addr) != 1) return std::nullopt;
+    return addr.s_addr;
+}
 
-/* ---------- BlockList: the C++ face of the kernel maps ---------- */
+void add_iface_ips(std::unordered_set<std::uint32_t>& allow, const std::string& ifname) {
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) == -1) return;
+    for (ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == nullptr) continue;
+        if (ifa->ifa_addr->sa_family == AF_INET && std::string(ifa->ifa_name) == ifname) {
+            auto* sa = reinterpret_cast<struct sockaddr_in*>(ifa->ifa_addr);
+            allow.insert(sa->sin_addr.s_addr);
+        }
+    }
+    freeifaddrs(ifaddr);
+}
+
+void add_gateway_ips(std::unordered_set<std::uint32_t>& allow) {
+    std::ifstream in("/proc/net/route");
+    std::string line;
+    std::getline(in, line);
+    while (std::getline(in, line)) {
+        std::istringstream iss(line);
+        std::string iface, dest, gw;
+        if (iss >> iface >> dest >> gw) {
+            if (dest == "00000000") {
+                unsigned int gw_ip;
+                if (std::sscanf(gw.c_str(), "%X", &gw_ip) == 1 && gw_ip != 0) {
+                    allow.insert(gw_ip);
+                }
+            }
+        }
+    }
+}
+
+bool check_process(const std::string& name) {
+    DIR* dir = opendir("/proc");
+    if (!dir) return false;
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        if (ent->d_type == DT_DIR && std::isdigit(ent->d_name[0])) {
+            std::string comm_path = std::string("/proc/") + ent->d_name + "/comm";
+            std::ifstream comm_file(comm_path);
+            if (comm_file.is_open()) {
+                std::string comm;
+                if (std::getline(comm_file, comm) && comm == name) {
+                    closedir(dir);
+                    return true;
+                }
+            }
+        }
+    }
+    closedir(dir);
+    return false;
+}
+
+template <typename K, typename V>
+bool map_update(int fd, const K& key, const V& value, __u64 flags = BPF_ANY) {
+    return bpf_map_update_elem(fd, &key, &value, flags) == 0;
+}
+
+struct RingBufDeleter {
+    void operator()(struct ring_buffer* rb) const { ring_buffer__free(rb); }
+};
+using RingBufPtr = std::unique_ptr<struct ring_buffer, RingBufDeleter>;
+
 class BlockList {
 public:
     BlockList(int allowed_fd, int blocked_fd, int stats_fd, int proto_stats_fd, const std::unordered_set<std::uint32_t>& allow, Storage* storage = nullptr)
@@ -97,34 +157,26 @@ public:
 
     bool allow_ip(std::uint32_t ip) {
         std::uint8_t dummy = 1;
-        if (!map_update(allowed_fd_, ip, dummy)) {
-            log(std::string{"[error] allow map update failed: "} + std::strerror(errno));
-            return false;
+        if (map_update(allowed_fd_, ip, dummy)) {
+            print_log("[ALLOWED]", ip_to_string(ip));
+            return true;
         }
-        log("[ALLOWED] " + ip_to_string(ip));
-        // unblock it if it was blocked
-        bpf_map_delete_elem(blocked_fd_, &ip);
-        return true;
+        return false;
+    }
+
+    bool unallow_ip(std::uint32_t ip) {
+        return bpf_map_delete_elem(allowed_fd_, &ip) == 0;
     }
 
     bool is_allowed(std::uint32_t ip) const {
         std::uint8_t dummy = 0;
-        return bpf_map_lookup_elem(allowed_fd_, &ip, &dummy) == 0;
+        return (bpf_map_lookup_elem(allowed_fd_, &ip, &dummy) == 0);
     }
 
-    bool unallow_ip(std::uint32_t ip) {
-        if (bpf_map_delete_elem(allowed_fd_, &ip) != 0) {
-            log("[info] " + ip_to_string(ip) + " was not in allowlist");
-            return false;
-        }
-        log("[UNALLOWED] " + ip_to_string(ip));
-        return true;
-    }
-
-    bool block(std::uint32_t ip, std::string_view reason, std::chrono::seconds duration = DEFAULT_BLOCK_DURATION) {
-        std::uint8_t dummy = 0;
-        if (bpf_map_lookup_elem(allowed_fd_, &ip, &dummy) == 0) {
-            log("[warn] refusing to block allow-listed " + ip_to_string(ip));
+    bool block(std::uint32_t ip, std::string_view reason, std::chrono::seconds duration = std::chrono::seconds(600), bool detect_only = false, bool manual = false) {
+        if (detect_only) return false;
+        if (is_allowed(ip)) {
+            log_warn("refusing to block allow-listed " + ip_to_string(ip));
             return false;
         }
         
@@ -139,340 +191,439 @@ public:
         }
 
         if (!map_update(blocked_fd_, ip, rec)) {
-            log(std::string{"[error] map update failed: "} + std::strerror(errno));
+            log_warn(std::string{"[error] map update failed: "} + std::strerror(errno));
             return false;
         }
-        log("[BLOCKED] " + ip_to_string(ip) + " (" + std::string{reason} + ")");
+        std::string label = manual ? "manual" : "automatic";
+        print_log("[BLOCKED]", ip_to_string(ip) + " ttl=" + std::to_string(duration.count()) + "s " + label, "\x1b[31m");
         return true;
     }
 
-    bool unblock(std::uint32_t ip) {
-        if (bpf_map_delete_elem(blocked_fd_, &ip) != 0) {   // fails with ENOENT if absent
-            log("[info] " + ip_to_string(ip) + " was not blocked");
-            return false;
+    void unblock(std::uint32_t ip) {
+        if (bpf_map_delete_elem(blocked_fd_, &ip) == 0) {
+            print_log("[EXPIRED]", ip_to_string(ip) + " (manual unblock)");
         }
-        log("[UNBLOCKED] " + ip_to_string(ip));
-        return true;
     }
 
-    void print_blocked(std::function<void(const std::string&)> out) const {
+    void print_blocked(std::function<void(const std::string&)> out) {
+        std::uint32_t key = 0, next_key;
         struct timespec ts;
         clock_gettime(CLOCK_MONOTONIC, &ts);
-        __u64 now = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+        std::uint64_t now_ns = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 
-        std::uint32_t key{}, next{};
-        const std::uint32_t* prev = nullptr;               // nullptr => "give me the first key"
-        int count = 0;
-        while (bpf_map_get_next_key(blocked_fd_, prev, &next) == 0) {  // iterate the hash table
-            struct block_record rec{};
-            if (bpf_map_lookup_elem(blocked_fd_, &next, &rec) == 0) {
-                std::string expire_str = "permanent";
-                if (rec.expires_at_ns != 0) {
-                    if (rec.expires_at_ns > now) {
-                        __u64 remain = (rec.expires_at_ns - now) / 1000000000ULL;
-                        expire_str = std::to_string(remain) + "s";
-                    } else {
-                        expire_str = "EXPIRED";
-                    }
+        out("Active Blocks:");
+        bool any = false;
+        while (bpf_map_get_next_key(blocked_fd_, &key, &next_key) == 0) {
+            struct block_record rec;
+            if (bpf_map_lookup_elem(blocked_fd_, &next_key, &rec) == 0) {
+                if (rec.expires_at_ns > 0 && rec.expires_at_ns <= now_ns) {
+                    key = next_key;
+                    continue; // expired
                 }
-                std::string off_str = "";
-                if (storage_) {
-                    int off = storage_->get_offense_count(ip_to_string(next));
-                    if (off > 0) off_str = " offense=" + std::to_string(off);
-                }
-                out("  " + ip_to_string(next) + "  dropped=" + std::to_string(rec.hits) + " expires in " + expire_str + off_str);
-                ++count;
+                std::string exp = (rec.expires_at_ns == 0) ? "permanent" : 
+                    std::to_string((rec.expires_at_ns - now_ns) / 1000000000) + "s left";
+                out("  " + ip_to_string(next_key) + " (hits: " + std::to_string(rec.hits) + ", " + exp + ")");
+                any = true;
             }
-            key = next; prev = &key;
+            key = next_key;
         }
-        out("  (" + std::to_string(count) + " blocked IPs)");
+        if (!any) out("  <none>");
     }
 
-    void print_stats(std::function<void(const std::string&)> out) const {
-        out("  packets dropped=" + std::to_string(read_stat(0)) +
-        "  passed=" + std::to_string(read_stat(1)));
-        out("  protocols: TCP=" + std::to_string(read_proto_stat(0)) +
-        " UDP=" + std::to_string(read_proto_stat(1)) +
-        " ICMP=" + std::to_string(read_proto_stat(2)) +
-        " Other=" + std::to_string(read_proto_stat(3)));
+    std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t> get_stats() {
+        std::uint32_t zero = 0;
+        struct { std::uint64_t dropped, passed; } global_stats{};
+        bpf_map_lookup_elem(stats_fd_, &zero, &global_stats);
+        
+        std::uint64_t tcp=0, udp=0, icmp=0, other=0;
+        std::uint32_t proto_tcp=6, proto_udp=17, proto_icmp=1;
+        bpf_map_lookup_elem(proto_stats_fd_, &proto_tcp, &tcp);
+        bpf_map_lookup_elem(proto_stats_fd_, &proto_udp, &udp);
+        bpf_map_lookup_elem(proto_stats_fd_, &proto_icmp, &icmp);
+        
+        std::uint32_t k = 0, nk;
+        while (bpf_map_get_next_key(proto_stats_fd_, &k, &nk) == 0) {
+            if (nk != proto_tcp && nk != proto_udp && nk != proto_icmp) {
+                std::uint64_t v=0;
+                if (bpf_map_lookup_elem(proto_stats_fd_, &nk, &v) == 0) other += v;
+            }
+            k = nk;
+        }
+        return {global_stats.dropped, global_stats.passed, tcp, udp, icmp, other};
     }
 
-    std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t> get_stats() const {
-        return {read_stat(0), read_stat(1), read_proto_stat(0), read_proto_stat(1), read_proto_stat(2), read_proto_stat(3)};
+    void print_stats(std::function<void(const std::string&)> out) {
+        auto [dropped, passed, tcp, udp, icmp, other] = get_stats();
+        std::ostringstream oss;
+        oss << "Stats: dropped=" << dropped << " passed=" << passed 
+            << " | Proto: TCP=" << tcp << " UDP=" << udp << " ICMP=" << icmp << " Other=" << other;
+        out(oss.str());
     }
 
 private:
-    std::uint64_t read_stat(std::uint32_t idx) const {
-        const int ncpu = libbpf_num_possible_cpus();
-        if (ncpu <= 0) return 0;
-        std::vector<std::uint64_t> per_cpu(static_cast<std::size_t>(ncpu));
-        if (bpf_map_lookup_elem(stats_fd_, &idx, per_cpu.data()) != 0) return 0;
-        return std::accumulate(per_cpu.begin(), per_cpu.end(), std::uint64_t{0});
-    }
-    
-    std::uint64_t read_proto_stat(std::uint32_t idx) const {
-        const int ncpu = libbpf_num_possible_cpus();
-        if (ncpu <= 0) return 0;
-        std::vector<std::uint64_t> per_cpu(static_cast<std::size_t>(ncpu));
-        if (bpf_map_lookup_elem(proto_stats_fd_, &idx, per_cpu.data()) != 0) return 0;
-        return std::accumulate(per_cpu.begin(), per_cpu.end(), std::uint64_t{0});
-    }
-
     void sweep_loop(std::stop_token st) {
         while (!st.stop_requested()) {
+            std::this_thread::sleep_for(2s);
+            
             struct timespec ts;
             clock_gettime(CLOCK_MONOTONIC, &ts);
-            __u64 now = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+            std::uint64_t now_ns = ts.tv_sec * 1000000000ULL + ts.tv_nsec;
 
-            std::uint32_t key{}, next{};
-            const std::uint32_t* prev = nullptr;
-            while (bpf_map_get_next_key(blocked_fd_, prev, &next) == 0) {
-                struct block_record rec{};
-                if (bpf_map_lookup_elem(blocked_fd_, &next, &rec) == 0) {
-                    if (rec.expires_at_ns != 0 && rec.expires_at_ns < now) {
-                        bpf_map_delete_elem(blocked_fd_, &next);
-                        log("[EXPIRED] " + ip_to_string(next));
+            std::vector<std::uint32_t> to_delete;
+            std::uint32_t key = 0, next_key;
+            
+            while (bpf_map_get_next_key(blocked_fd_, &key, &next_key) == 0) {
+                struct block_record rec;
+                if (bpf_map_lookup_elem(blocked_fd_, &next_key, &rec) == 0) {
+                    if (rec.expires_at_ns > 0 && rec.expires_at_ns <= now_ns) {
+                        to_delete.push_back(next_key);
                     }
                 }
-                key = next; prev = &key;
+                key = next_key;
             }
-            // wait for 5 seconds or until stop requested
-            std::mutex m; std::unique_lock lk(m);
-            std::condition_variable_any().wait_for(lk, st, 5s, []{return false;});
+            
+            for (auto k : to_delete) {
+                if (bpf_map_delete_elem(blocked_fd_, &k) == 0) {
+                    print_log("[EXPIRED]", ip_to_string(k) + " (ttl elapsed)");
+                }
+            }
         }
     }
 
-    int allowed_fd_, blocked_fd_, stats_fd_, proto_stats_fd_;
+    int allowed_fd_;
+    int blocked_fd_;
+    int stats_fd_;
+    int proto_stats_fd_;
     Storage* storage_;
     std::jthread sweeper_;
 };
 
-/* ---------- XdpEngine: load + attach, with automatic detach ---------- */
 class XdpEngine {
 public:
-    XdpEngine(const std::string& obj_path, const std::string& ifname, bool fresh) : ifname_{ifname} {
-        const unsigned ifindex = if_nametoindex(ifname.c_str());   // "eth0" -> e.g. 2
+    XdpEngine(const std::string& obj_path, const std::string& ifname) : ifname_{ifname} {
+        const unsigned ifindex = if_nametoindex(ifname.c_str());
         if (ifindex == 0) throw std::runtime_error("no such interface: " + ifname);
 
-        obj_.reset(bpf_object__open_file(obj_path.c_str(), nullptr));  // (1) parse the ELF file
+        obj_.reset(bpf_object__open_file(obj_path.c_str(), nullptr));
         if (!obj_) throw std::runtime_error("open failed: " + std::string{std::strerror(errno)});
 
         bpf_map* allowed  = bpf_object__find_map_by_name(obj_.get(), "allowed_ips");
         bpf_map* blocked  = bpf_object__find_map_by_name(obj_.get(), "blocked_ips");
         if (!allowed || !blocked) throw std::runtime_error("missing map in object");
 
-        // Trade-off: Persisting maps across restarts avoids dropping state (e.g. active blocks and allowlists
-        // are remembered), but if the system crashes or bugs exist, stale entries might get stuck indefinitely.
-        if (fresh) {
-            unlink("/sys/fs/bpf/xdp_engine/allowed_ips");
-            unlink("/sys/fs/bpf/xdp_engine/blocked_ips");
-        }
-        
-        bool allow_exists = false, block_exists = false;
-        
-        int fd_allow = bpf_obj_get("/sys/fs/bpf/xdp_engine/allowed_ips");
-        if (fd_allow >= 0) {
-            bpf_map__reuse_fd(allowed, fd_allow);
-            close(fd_allow);
-            allow_exists = true;
-        }
-        
-        int fd_block = bpf_obj_get("/sys/fs/bpf/xdp_engine/blocked_ips");
-        if (fd_block >= 0) {
-            bpf_map__reuse_fd(blocked, fd_block);
-            close(fd_block);
-            block_exists = true;
-        }
+        if (int err = bpf_object__load(obj_.get()))
+            throw std::runtime_error("load failed: " + std::string{std::strerror(-err)});
 
-        if (int err = bpf_object__load(obj_.get()))                    // (2) create maps, verify, JIT
-            throw std::runtime_error("load failed (verifier?): " + std::string{std::strerror(-err)});
-        
-        mkdir("/sys/fs/bpf/xdp_engine", 0755);
-        if (!allow_exists) bpf_map__pin(allowed, "/sys/fs/bpf/xdp_engine/allowed_ips");
-        if (!block_exists) bpf_map__pin(blocked, "/sys/fs/bpf/xdp_engine/blocked_ips");
+        bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_drop");
+        if (!prog) throw std::runtime_error("program xdp_drop not found");
 
-        bpf_program* prog = bpf_object__find_program_by_name(obj_.get(), "xdp_firewall");
-        bpf_map* stats    = bpf_object__find_map_by_name(obj_.get(), "stats");
-        bpf_map* events   = bpf_object__find_map_by_name(obj_.get(), "events");
-        bpf_map* limits   = bpf_object__find_map_by_name(obj_.get(), "limits");
-        bpf_map* pstats   = bpf_object__find_map_by_name(obj_.get(), "proto_stats");
-        if (!prog || !allowed || !blocked || !stats || !events || !limits || !pstats) throw std::runtime_error("program/map not found in object");
+        link_.reset(bpf_program__attach_xdp(prog, ifindex));
+        if (!link_) throw std::runtime_error("attach failed: " + std::string{std::strerror(errno)});
 
         allowed_fd_ = bpf_map__fd(allowed);
-        blocked_fd_ = bpf_map__fd(blocked);       // integer handles for the bpf() syscall
-        stats_fd_   = bpf_map__fd(stats);
-        events_fd_  = bpf_map__fd(events);
-        limits_fd_  = bpf_map__fd(limits);
-        proto_stats_fd_ = bpf_map__fd(pstats);
+        blocked_fd_ = bpf_map__fd(blocked);
         
-        // Write default limit
-        set_limit(200);
+        bpf_map* stats = bpf_object__find_map_by_name(obj_.get(), "ip_stats");
+        stats_fd_ = stats ? bpf_map__fd(stats) : -1;
+        
+        bpf_map* events = bpf_object__find_map_by_name(obj_.get(), "events");
+        events_fd_ = events ? bpf_map__fd(events) : -1;
 
-        link_.reset(bpf_program__attach_xdp(prog, static_cast<int>(ifindex)));  // (3) hook into NIC
-        if (!link_) throw std::runtime_error("attach failed: " + std::string{std::strerror(errno)});
+        bpf_map* limits = bpf_object__find_map_by_name(obj_.get(), "limits");
+        limits_fd_ = limits ? bpf_map__fd(limits) : -1;
+
+        bpf_map* pstats = bpf_object__find_map_by_name(obj_.get(), "proto_stats");
+        proto_stats_fd_ = pstats ? bpf_map__fd(pstats) : -1;
+
+        set_limit(200);
     }
+
     int allowed_fd() const { return allowed_fd_; }
     int blocked_fd() const { return blocked_fd_; }
-    int stats_fd()   const { return stats_fd_; }
-    int events_fd()  const { return events_fd_; }
+    int stats_fd() const { return stats_fd_; }
+    int events_fd() const { return events_fd_; }
     int proto_stats_fd() const { return proto_stats_fd_; }
-    int get_limit() const { return limit_; }
     std::string get_ifname() const { return ifname_; }
-    
+    int get_limit() const { return limit_; }
+
     void set_limit(std::uint32_t limit) {
-        std::uint32_t zero = 0;
-        if (!map_update(limits_fd_, zero, limit)) {
-            log("[error] Failed to set limit");
-        } else {
-            limit_ = limit;
-            log("[engine] SYN rate limit set to " + std::to_string(limit) + "/s");
+        if (limits_fd_ >= 0) {
+            std::uint32_t zero = 0;
+            if (!map_update(limits_fd_, zero, limit)) {
+                log_warn("Failed to set limit");
+            } else {
+                limit_ = limit;
+                log_info("SYN rate limit set to " + std::to_string(limit) + "/s");
+            }
         }
     }
 
 private:
-    ObjPtr  obj_;      // declared first => destroyed LAST (link must go before the object)
-    LinkPtr link_;     // destroyed first => XDP program detaches from the interface
+    struct BpfObjDeleter {
+        void operator()(struct bpf_object* obj) const { bpf_object__close(obj); }
+    };
+    struct BpfLinkDeleter {
+        void operator()(struct bpf_link* link) const { bpf_link__destroy(link); }
+    };
+    
+    std::string ifname_;
+    std::unique_ptr<struct bpf_object, BpfObjDeleter> obj_;
+    std::unique_ptr<struct bpf_link, BpfLinkDeleter> link_;
     int allowed_fd_{-1}, blocked_fd_{-1}, stats_fd_{-1}, events_fd_{-1}, limits_fd_{-1}, proto_stats_fd_{-1};
     int limit_{200};
-    std::string ifname_;
 };
 
-/* ---------- SSH brute-force detector (runs on its own jthread) ---------- */
-#include "log_tailer.h"
+using EventCallback = std::function<void(const Event&)>;
 
 class SshDetector {
 public:
     SshDetector(std::string path, EventCallback cb)
-    : path_{std::move(path)}, cb_{std::move(cb)} {}
-
-    void run(std::stop_token st) {
-        LogTailer tailer(path_, [this](const std::string& line) { handle_line(line); });
-        tailer.run(st);
-    }
+        : cb_(std::move(cb)), tailer_(std::move(path), [this](const std::string& line) { handle_line(line); }) {}
+    
+    void run(std::stop_token st) { tailer_.run(st); }
 
 private:
-    void handle_line(const std::string& line_in) {
-        try {
-            std::string line = line_in;
-            if (line.size() > 4096) line = line.substr(0, 4096);
-            static const std::regex re{
-                R"(Failed password for (?:invalid user )?(.+?) from (\d{1,3}(?:\.\d{1,3}){3}))"};
-            std::smatch m;
-            if (!std::regex_search(line, m, re)) return;
-            std::string user = sanitize_utf8(m[1].str());
-            std::string ip_str = m[2].str();
-            struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
-            char time_buf[32];
-            strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
-            Event e;
-            e.ts_iso = time_buf;
-            e.source = "ssh_log";
-            e.type = "ssh_failed";
-            e.src_ip = ip_str;
-            e.user = user;
-            e.severity = 3;
-            if (cb_) cb_(e);
-        } catch (const std::exception& e) {
-            static auto last_warn = std::chrono::steady_clock::time_point{};
-            auto now = std::chrono::steady_clock::now();
-            if (now - last_warn > std::chrono::seconds(5)) {
-                std::cerr << "[WARN] Exception in SshDetector: " << e.what() << "\n";
-                last_warn = now;
-            }
-        }
+    void handle_line(const std::string& line) {
+        static const std::regex re{R"(Failed password for (?:invalid user )?(\S+) from (\d{1,3}(?:\.\d{1,3}){3}) port \d+ ssh2)"};
+        std::smatch m;
+        if (!std::regex_search(line, m, re)) return;
 
+        std::string user = sanitize_utf8(m[1].str());
+        std::string ip_str = m[2].str();
+
+        if (!parse_ipv4_local(ip_str)) return;
+
+        Event e;
+        e.ts_iso = get_iso_time_str();
+        e.source = "ssh_log";
+        e.type = "ssh_failed";
+        e.src_ip = ip_str;
+        e.user = user;
+        e.severity = 3;
+        
+        if (cb_) cb_(e);
     }
-
-    std::string path_;
     EventCallback cb_;
+    LogTailer tailer_;
 };
 
-#include "event.h"
-
-static std::atomic<bool> g_running{true};
-extern "C" void on_signal(int) { g_running = false; }
-
-static int handle_event(void* ctx, void *data, size_t size) {
-    try {
-        if (size < sizeof(struct drop_event)) return 0;
-        auto* ev = static_cast<struct drop_event*>(data);
-        struct timespec ts;
-        clock_gettime(CLOCK_REALTIME, &ts);
-        char time_buf[32];
-        strftime(time_buf, sizeof(time_buf), "%Y-%m-%dT%H:%M:%SZ", gmtime(&ts.tv_sec));
-        Event e;
-        e.ts_iso = time_buf;
-        e.source = "xdp_ringbuf";
-        if (ev->reason == REASON_RATELIMIT) {
-            e.type = "rate_limit_exceeded";
-        } else if (ev->reason == REASON_PORTSCAN) {
-            e.type = "port_scan";
-            e.severity = 4;
-        } else {
-            e.type = "packet_dropped";
-        }
-        e.src_ip = ip_to_string(ev->src_ip);
-        e.user = "";
-        e.severity = 5;
-        if (ctx) {
-            auto* cb = static_cast<EventCallback*>(ctx);
-            (*cb)(e);
-        }
-    } catch (const std::exception& e) {
-        static auto last_warn = std::chrono::steady_clock::time_point{};
-        auto now = std::chrono::steady_clock::now();
-        if (now - last_warn > std::chrono::seconds(5)) {
-            std::cerr << "[WARN] Exception in ringbuf handle_event: " << e.what() << "\n";
-            last_warn = now;
-        }
-    }
-    return 0;
-}
-
 int main(int argc, char** argv) {
-    if (argc < 4) {
-        std::cerr << "usage: sudo " << argv[0]
-        << " <iface> <xdp_prog.bpf.o> <logfile> [--allow IP]...\n";
-        return 2;
+    if (argc < 2) {
+        std::cerr << "Usage: sudo " << argv[0] << " <iface> [--enforce] [--allow IP]... [--ttl S] [--threshold N] [--window S] [--auth-log P] [--access-log P]\n";
+        std::cerr << "       sudo " << argv[0] << " cleanup <iface>\n";
+        std::cerr << "       sudo " << argv[0] << " reset\n";
+        std::cerr << "       sudo " << argv[0] << " report\n";
+        return 1;
     }
-    std::unordered_set<std::uint32_t> allow{*parse_ipv4("127.0.0.1")};
-    bool dry_run = false;
-    bool fresh = false;
-    for (int i = 4; i < argc; ++i) {
-        if (std::string_view{argv[i]} == "--allow" && i + 1 < argc) {
-            if (auto ip = parse_ipv4(argv[i + 1])) allow.insert(*ip);
-            i++;
-        } else if (std::string_view{argv[i]} == "--dry-run") {
-            dry_run = true;
-        } else if (std::string_view{argv[i]} == "--fresh") {
-            fresh = true;
+
+    std::string cmd_or_iface = argv[1];
+
+    if (cmd_or_iface == "cleanup") {
+        if (argc < 3) {
+            std::cerr << "Usage: sudo " << argv[0] << " cleanup <iface>\n";
+            return 1;
+        }
+        std::string iface = argv[2];
+        unsigned int ifindex = if_nametoindex(iface.c_str());
+        if (ifindex == 0) {
+            std::cerr << "Interface " << iface << " not found.\n";
+            return 1;
+        }
+        __u32 prog_id = 0;
+        if (bpf_xdp_query_id(ifindex, 0, &prog_id) == 0 && prog_id > 0) {
+            DECLARE_LIBBPF_OPTS(bpf_xdp_attach_opts, attach_opts);
+            if (bpf_xdp_detach(ifindex, 0, &attach_opts) == 0) {
+                std::cout << "Detached XDP program (ID: " << prog_id << ") from " << iface << "\n";
+            } else {
+                std::cerr << "Failed to detach XDP program.\n";
+                return 1;
+            }
+        } else {
+            std::cout << "No XDP program attached to " << iface << ".\n";
+        }
+        return 0;
+    }
+
+    if (cmd_or_iface == "reset") {
+        std::filesystem::remove_all("/sys/fs/bpf/xdp_engine");
+        std::cout << "Removed pinned maps from /sys/fs/bpf/xdp_engine\n";
+        unlink("/run/xdp_engine.sock");
+        if (access("engine.db", F_OK) == 0) {
+            std::string backup = "engine.db.backup." + std::to_string(std::time(nullptr));
+            std::filesystem::rename("engine.db", backup);
+            std::cout << "Moved engine.db to " << backup << "\n";
+        } else if (access("/opt/xdp-engine/engine.db", F_OK) == 0) {
+            std::string backup = "/opt/xdp-engine/engine.db.backup." + std::to_string(std::time(nullptr));
+            std::filesystem::rename("/opt/xdp-engine/engine.db", backup);
+            std::cout << "Moved /opt/xdp-engine/engine.db to " << backup << "\n";
+        }
+        return 0;
+    }
+
+    if (cmd_or_iface == "report") {
+        Storage storage{"engine.db"};
+        storage.generate_report("report.md");
+        std::cout << "Report written to report.md\n";
+        
+        auto print = [](const std::string& msg) { std::cout << msg << "\n"; };
+        std::cout << "=== Last 10 Alerts ===\n";
+        storage.print_last_alerts(10, print);
+        return 0;
+    }
+
+    // Normal Start
+    std::string iface = cmd_or_iface;
+    std::unordered_set<std::uint32_t> allow{*parse_ipv4_local("127.0.0.1")};
+    add_iface_ips(allow, iface);
+    add_gateway_ips(allow);
+
+    bool enforce_mode = false;
+    int ttl = 600;
+    int threshold = 5;
+    int window = 60;
+    std::string auth_log;
+    if (access("/var/log/secure", R_OK) == 0) auth_log = "/var/log/secure";
+    else auth_log = "/var/log/auth.log";
+    std::string access_log = "/var/log/nginx/access.log";
+
+    use_color = isatty(STDOUT_FILENO);
+
+    for (int i = 2; i < argc; i++) {
+        std::string_view arg{argv[i]};
+        if (arg == "--allow" && i + 1 < argc) {
+            if (auto ip = parse_ipv4_local(argv[++i])) allow.insert(*ip);
+        } else if (arg == "--enforce") {
+            enforce_mode = true;
+        } else if (arg == "--ttl" && i + 1 < argc) {
+            ttl = std::stoi(argv[++i]);
+        } else if (arg == "--threshold" && i + 1 < argc) {
+            threshold = std::stoi(argv[++i]);
+        } else if (arg == "--window" && i + 1 < argc) {
+            window = std::stoi(argv[++i]);
+        } else if (arg == "--auth-log" && i + 1 < argc) {
+            auth_log = argv[++i];
+        } else if (arg == "--access-log" && i + 1 < argc) {
+            access_log = argv[++i];
         }
     }
 
-    struct sigaction sa{};                  // no SA_RESTART => blocking read is interrupted by Ctrl-C
-    sa.sa_handler = on_signal;
+    bool all_pass = true;
+    auto check_fail = [&](const std::string& msg) {
+        std::cerr << "FAIL: " << msg << "\n";
+        all_pass = false;
+    };
+
+    if (getuid() != 0) check_fail("Not running as root. Fix: use sudo");
+    else std::cout << "PASS: Running as root\n";
+
+    struct utsname buffer;
+    if (uname(&buffer) == 0) std::cout << "PASS: Kernel " << buffer.release << "\n";
+    else check_fail("uname failed");
+    
+    if (access("/sys/kernel/btf/vmlinux", R_OK) == 0) std::cout << "PASS: BTF file found\n";
+    else check_fail("BTF file missing. Fix: install kernel headers");
+
+    unsigned int ifindex = if_nametoindex(iface.c_str());
+    if (ifindex > 0) std::cout << "PASS: Interface " << iface << " exists\n";
+    else check_fail("Interface " + iface + " not found");
+
+    if (check_process("sshd")) std::cout << "PASS: sshd is running\n";
+    else check_fail("sshd not running. Fix: sudo systemctl start sshd");
+
+    if (check_process("rsyslogd")) std::cout << "PASS: rsyslogd is running\n";
+    else std::cout << "WARN: rsyslogd not running (journal-only setups do not populate /var/log by default)\n";
+
+    if (access(auth_log.c_str(), R_OK) == 0) std::cout << "PASS: " << auth_log << " readable\n";
+    else check_fail(auth_log + " not readable. Fix: ensure rsyslog is logging auth authpriv to it");
+
+    if (access(access_log.c_str(), R_OK) == 0) std::cout << "PASS: " << access_log << " readable\n";
+    else std::cout << "WARN: " << access_log << " not readable\n";
+
+    auto check_ssh_conf = [&](const std::string& p) {
+        std::ifstream f(p);
+        std::string line;
+        while (std::getline(f, line)) {
+            if (line.find("PasswordAuthentication") != std::string::npos && line[0] != '#') return line;
+        }
+        return std::string("");
+    };
+    std::string pwd_auth = check_ssh_conf("/etc/ssh/sshd_config");
+    if (pwd_auth.empty()) {
+        for (const auto& entry : std::filesystem::directory_iterator("/etc/ssh/sshd_config.d")) {
+            pwd_auth = check_ssh_conf(entry.path());
+            if (!pwd_auth.empty()) break;
+        }
+    }
+    if (pwd_auth.find("yes") != std::string::npos) std::cout << "PASS: " << pwd_auth << "\n";
+    else std::cout << "WARN: PasswordAuth not explicitly 'yes'. Failed password lines will not appear in logs if disabled!\n";
+
+    if (ifindex > 0) {
+        __u32 prog_id = 0;
+        if (bpf_xdp_query_id(ifindex, 0, &prog_id) == 0 && prog_id > 0) {
+            check_fail("XDP program already attached (ID: " + std::to_string(prog_id) + "). Fix: sudo ./engine cleanup " + iface);
+        } else {
+            std::cout << "PASS: No existing XDP program attached to " << iface << "\n";
+        }
+    }
+
+    if (!all_pass) return 1;
+
+    std::string mode_str = enforce_mode ? "ENFORCE" : "DETECT";
+
+    std::cout << "=== ENGINE STARTUP BANNER ===\n";
+    std::cout << "Interface: " << iface << "\n";
+    std::cout << "XDP Mode:  Auto\n";
+    std::cout << "Mode:      " << mode_str << "\n";
+    std::cout << "TTL:       " << ttl << "s\n";
+    std::cout << "Threshold: " << threshold << "\n";
+    std::cout << "Window:    " << window << "s\n";
+    std::cout << "Auth Log:  " << auth_log << "\n";
+    std::cout << "Access Log:" << access_log << "\n";
+    std::cout << "Allowed:   ";
+    for (auto ip : allow) std::cout << ip_to_string(ip) << " ";
+    std::cout << "\nDashboard: http://127.0.0.1:5000/?showcase=1\n";
+    std::cout << "=============================\n";
+    
+    struct sigaction sa{};
+    sa.sa_handler = [](int) { g_running = false; };
     sigemptyset(&sa.sa_mask);
     sigaction(SIGINT, &sa, nullptr);
     sigaction(SIGTERM, &sa, nullptr);
 
     try {
         Storage storage{"engine.db"};
-        RuleEngine rule_engine{"rules.yaml"};
+        storage.insert_action({"mode_change", mode_str, get_iso_time_str(), ""});
 
-        XdpEngine engine{argv[2], argv[1], fresh};
+        RuleEngine rule_engine{"rules.yaml"};
+        if (threshold > 0 || window > 0) rule_engine.override_rules(threshold, window);
+
+        std::string bpf_obj = "xdp_prog.bpf.o";
+        char proc_exe[256];
+        ssize_t len = readlink("/proc/self/exe", proc_exe, sizeof(proc_exe)-1);
+        if (len != -1) {
+            proc_exe[len] = '\0';
+            std::string exe_path(proc_exe);
+            size_t last_slash = exe_path.find_last_of('/');
+            if (last_slash != std::string::npos) {
+                std::string bpf_path = exe_path.substr(0, last_slash) + "/xdp_prog.bpf.o";
+                if (access(bpf_path.c_str(), R_OK) == 0) bpf_obj = bpf_path;
+            }
+        }
+
+        XdpEngine engine{bpf_obj, iface};
         BlockList blocklist{engine.allowed_fd(), engine.blocked_fd(), engine.stats_fd(), engine.proto_stats_fd(), allow, &storage};
         
-        // BlockCallback returns: 0 = ok, 1 = skipped (allowlist/dry-run), -1 = failed
         PlaybookRunner::BlockCallback block_cb = [&](const std::string& ip_str, const std::string& rule, int seconds) -> int {
-            auto ip = parse_ipv4(ip_str);
+            auto ip = parse_ipv4_local(ip_str);
             if (!ip) return -1;
-            if (blocklist.is_allowed(*ip)) return 1; // skipped
-            if (dry_run) {
-                log("[DRY RUN] would block " + ip_str);
-                return 1; // skipped
+            if (blocklist.is_allowed(*ip)) return 1;
+            
+            if (!enforce_mode) {
+                print_log("[DETECTED]", "would block " + ip_str + " (detect mode)", "\x1b[34m");
+                storage.insert_action({"detected", ip_str, get_iso_time_str(), rule});
+                return 1;
             }
-            return blocklist.block(*ip, rule, std::chrono::seconds(seconds)) ? 0 : -1;
+            return blocklist.block(*ip, rule, std::chrono::seconds(seconds), false, false) ? 0 : -1;
         };
         
         PlaybookRunner::RecordCallback record_cb = [&](const ActionRecord& act) {
@@ -494,21 +645,42 @@ int main(int argc, char** argv) {
         PlaybookRunner runner{"playbooks.yaml", "known_ips.txt", "blocklist.txt", block_cb, record_cb, notify_cb, off_cb, rec_off_cb};
         
         EventCallback on_event = [&](const Event& e) {
-            log("[EVENT] " + e.to_json().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+            if (e.type == "ssh_failed") {
+                print_log("[AUTH]", "SSH failure from " + e.src_ip + " (" + e.user + ")", "\x1b[33m");
+            } else if (e.type == "port_scan") {
+                print_log("[SCAN]", "Port scan from " + e.src_ip, "\x1b[33m");
+            } else if (e.type.find("http_") == 0) {
+                print_log("[WEB]", e.type + " from " + e.src_ip, "\x1b[33m");
+            } else if (e.type == "rate_limit_exceeded") {
+                print_log("[FLOOD]", "SYN rate limit exceeded from " + e.src_ip, "\x1b[33m");
+            }
             storage.insert_event(e);
             
             auto alerts = rule_engine.process(e);
-            for (auto a : alerts) { // By value so we can mutate for enrichment
-                runner.execute(a); // Modifies 'a' (enrichment, block_seconds)
-                log("[ALERT] " + a.to_json().dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
+            for (auto a : alerts) { 
+                runner.execute(a); 
                 storage.insert_alert(a);
             }
         };
 
-        SshDetector detector{argv[3], on_event};
+        SshDetector detector{auth_log, on_event};
         std::jthread watcher{[&detector](std::stop_token st) { detector.run(st); }};
         
-        HttpDetector http_detector{"/tmp/fake_access.log", rule_engine, on_event};
+        HttpDetector http_detector{access_log, rule_engine, on_event};
+
+        auto handle_event = [](void* ctx, void* data, size_t size) -> int {
+            if (size < sizeof(drop_event)) return 0;
+            auto* d = static_cast<const drop_event*>(data);
+            auto* on_event_ptr = static_cast<EventCallback*>(ctx);
+            Event e;
+            e.ts_iso = get_iso_time_str();
+            e.source = "xdp";
+            e.type = (d->reason == REASON_RATELIMIT) ? "rate_limit_exceeded" : "xdp_drop";
+            e.src_ip = ip_to_string(d->src_ip);
+            e.severity = 4;
+            (*on_event_ptr)(e);
+            return 0;
+        };
 
         RingBufPtr rb{ring_buffer__new(engine.events_fd(), handle_event, &on_event, nullptr)};
         if (!rb) throw std::runtime_error("failed to create ring buffer");
@@ -532,24 +704,31 @@ int main(int argc, char** argv) {
             }
         };
 
-        std::jthread metrics_poller{[&storage, &blocklist, &engine, get_xdp_mode](std::stop_token st) {
+        uint64_t last_dropped = 0;
+        
+        std::jthread metrics_poller{[&](std::stop_token st) {
             while (!st.stop_requested()) {
                 std::mutex m; std::unique_lock lk(m);
                 if (std::condition_variable_any().wait_for(lk, st, 2s, []{return false;})) {
-                    break; // stop requested
+                    break;
                 }
                 
                 auto [dropped, passed, tcp, udp, icmp, other] = blocklist.get_stats();
                 struct timespec ts;
                 clock_gettime(CLOCK_REALTIME, &ts);
                 
-                std::string mode = get_xdp_mode(engine.get_ifname());
-                storage.insert_metrics(ts.tv_sec, dropped, passed, tcp, udp, icmp, other, engine.get_limit(), mode);
+                std::string xdp_mode = get_xdp_mode(engine.get_ifname());
+                storage.insert_metrics(ts.tv_sec, dropped, passed, tcp, udp, icmp, other, engine.get_limit(), enforce_mode ? "ENFORCE" : "DETECT");
+                
+                if (dropped > last_dropped) {
+                    uint64_t rate = (dropped - last_dropped) / 2;
+                    print_log("[DROPPING]", "total=" + std::to_string(dropped) + " rate=" + std::to_string(rate) + "/s", "\x1b[31m");
+                    last_dropped = dropped;
+                }
             }
         }};
 
-        log("[engine] XDP attached to " + std::string{argv[1]} +
-        ". Commands: allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | alerts | approve <id> | deny <id> | quit");
+        log_info("XDP attached to " + iface + ". Commands: mode [detect|enforce|show] | allow <ip> | unallow <ip> | block <ip> | unblock <ip> | list | stats | alerts | approve <id> | deny <id> | quit");
 
         auto process_command = [&](const std::string& line, std::function<void(const std::string&)> out) {
             std::istringstream iss{line};
@@ -559,9 +738,14 @@ int main(int argc, char** argv) {
             else if (cmd == "list")  blocklist.print_blocked(out);
             else if (cmd == "stats") blocklist.print_stats(out);
             else if (cmd == "alerts") storage.print_last_alerts(10, out);
-            else if (cmd == "report") { storage.generate_report("report.md"); out("ok"); }
             else if (cmd == "limit") {
                 try { engine.set_limit(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
+            }
+            else if (cmd == "mode") {
+                if (arg == "detect") { enforce_mode = false; storage.insert_action({"mode_change", "DETECT", get_iso_time_str(), ""}); print_log("[MODE]", "detect"); out("mode set to detect"); }
+                else if (arg == "enforce") { enforce_mode = true; storage.insert_action({"mode_change", "ENFORCE", get_iso_time_str(), ""}); print_log("[MODE]", "enforce"); out("mode set to enforce"); }
+                else if (arg == "show") { out(enforce_mode ? "enforce" : "detect"); }
+                else { out("error: mode [detect|enforce|show]"); }
             }
             else if (cmd == "approve") {
                 try { runner.approve(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
@@ -570,10 +754,10 @@ int main(int argc, char** argv) {
                 try { runner.deny(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
             }
             else if (cmd == "block" || cmd == "unblock" || cmd == "allow" || cmd == "unallow") {
-                if (auto ip = parse_ipv4(arg)) {
+                if (auto ip = parse_ipv4_local(arg)) {
                     if (cmd == "block") {
                         int seconds = arg2.empty() ? 600 : std::stoi(arg2);
-                        blocklist.block(*ip, "manual", std::chrono::seconds(seconds));
+                        blocklist.block(*ip, "manual", std::chrono::seconds(seconds), false, true);
                         out("ok");
                     }
                     else if (cmd == "unblock") { blocklist.unblock(*ip); out("ok"); }
@@ -629,20 +813,20 @@ int main(int argc, char** argv) {
         std::string line;
         if (isatty(STDIN_FILENO)) {
             while (g_running && std::getline(std::cin, line)) {
-                process_command(line, [](const std::string& msg) { log(msg); });
+                process_command(line, [](const std::string& msg) { log_info(msg); });
             }
         }
         
         if (g_running) {
-            log("[engine] running in daemon mode, control via engine-cli");
+            log_info("running in daemon mode, control via engine-cli");
             while (g_running) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
         }
-        log("[engine] shutting down, detaching XDP");
+        log_info("shutting down, detaching XDP");
     } catch (const std::exception& e) {
         std::cerr << "fatal: " << e.what() << "\n";
         return 1;
-    }   // destructors run here in reverse order: watcher stops+joins, then link detaches
+    }
     return 0;
 }
