@@ -81,6 +81,13 @@ struct {
 
 /* ---------- MAP 7: protocol counters ---------- */
 struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, __u32);
+    __type(value, __u64);
+} icmp_state SEC(".maps");
+
+struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 4);            // 0=TCP, 1=UDP, 2=ICMP, 3=Other
     __type(key, __u32);
@@ -133,7 +140,23 @@ struct {
      
      if (ip->protocol == IPPROTO_TCP) bump_proto(0);
      else if (ip->protocol == IPPROTO_UDP) bump_proto(1);
-     else if (ip->protocol == IPPROTO_ICMP) bump_proto(2);
+     else if (ip->protocol == IPPROTO_ICMP) {
+         bump_proto(2);
+         __u64 now = bpf_ktime_get_ns();
+         __u64 *last_seen = bpf_map_lookup_elem(&icmp_state, &src_ip);
+         if (!last_seen || (now - *last_seen >= 5000000000ULL)) {
+             __u64 new_ts = now;
+             bpf_map_update_elem(&icmp_state, &src_ip, &new_ts, BPF_ANY);
+             struct drop_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+             if (e) {
+                 e->ts_ns = now;
+                 e->src_ip = src_ip;
+                 e->reason = REASON_ICMP;
+                 e->total_hits = 1;
+                 bpf_ringbuf_submit(e, 0);
+             }
+         }
+     }
      else bump_proto(3);
 
      /* ---- Check Allowlist FIRST ---- */

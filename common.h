@@ -21,5 +21,6 @@ struct drop_event {
 #define REASON_BLOCKLIST 0
 #define REASON_RATELIMIT 1
 #define REASON_PORTSCAN  2
+#define REASON_ICMP      3
 
 #endif
