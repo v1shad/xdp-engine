@@ -61,7 +61,7 @@ for _ in {1..6}; do
 done
 sleep 1
 
-HAS_10_10_0_6=$(.../engine-cli list | grep "10.10.0.6" || true)
+HAS_10_10_0_6=$(../engine-cli list | grep "10.10.0.6" || true)
 if [ -z "$HAS_10_10_0_6" ]; then
     echo "[FAIL] The engine DID NOT block 10.10.0.6 after log truncation!"
     FAIL=1
@@ -79,7 +79,7 @@ for _ in {1..6}; do
 done
 sleep 1
 
-HAS_10_10_0_7=$(.../engine-cli list | grep "10.10.0.7" || true)
+HAS_10_10_0_7=$(../engine-cli list | grep "10.10.0.7" || true)
 if [ -z "$HAS_10_10_0_7" ]; then
     echo "[FAIL] The engine DID NOT block 10.10.0.7 after rename rotation!"
     FAIL=1
@@ -98,7 +98,7 @@ fi
 
 # b) engine-cli list contains only expected IPs
 # Should be empty or contain only 10.10.0.6
-LIST_OUTPUT=$(.../engine-cli list | grep -v "10.10.0.6" | grep -v "10.10.0.7" | grep -v "Currently blocked IPs" | grep -v "Total:" | grep -P "\d+\.\d+\.\d+\.\d+" || true)
+LIST_OUTPUT=$(../engine-cli list | grep -v "10.10.0.6" | grep -v "10.10.0.7" | grep -v "Currently blocked IPs" | grep -v "Total:" | grep -P "\d+\.\d+\.\d+\.\d+" || true)
 if [ -z "$LIST_OUTPUT" ]; then
     echo "[PASS] No hostile IPs caused a wrong block."
 else
@@ -106,7 +106,7 @@ else
 fi
 
 # c) 127.0.0.1 and 10.10.0.1 never blocked
-if .../engine-cli list | grep -qE "127\.0\.0\.1|10\.10\.0\.1"; then
+if ../engine-cli list | grep -qE "127\.0\.0\.1|10\.10\.0\.1"; then
     echo "[FAIL] 127.0.0.1 or 10.10.0.1 was blocked!"
 else
     echo "[PASS] 127.0.0.1 and 10.10.0.1 were never blocked."
@@ -121,7 +121,7 @@ else
 fi
 
 # e) SQLite integrity
-if sqlite3 /opt/xdp-engin../engine.db "PRAGMA integrity_check;" | grep -q "ok"; then
+if sqlite3 ../engine.db "PRAGMA integrity_check;" | grep -q "ok"; then
     echo "[PASS] SQLite DB integrity check: ok"
 else
     echo "[FAIL] SQLite DB corruption detected!"

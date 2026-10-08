@@ -18,7 +18,9 @@ if ! ip netns list | grep -q "^attacker\b" || ! ip link show veth-host >/dev/nul
 fi
 
 echo "[*] Stopping service and clearing BPF maps..."
-systemctl stop xdp-engine 2>/dev/null || true
+pkill -x engine 2>/dev/null || true
+sleep 1
+../engine cleanup veth-host 2>/dev/null || true
 rm -rf /sys/fs/bpf/xdp_engine
 ip link set dev veth-host xdp off 2>/dev/null || true
 
@@ -29,15 +31,15 @@ chown root:root /tmp/fake_auth.log /tmp/fake_access.log 2>/dev/null || true
 rm -f report.md
 
 if [ "$KEEP_DB" -eq 0 ]; then
-    if [ -f "/opt/xdp-engin../engine.db" ]; then
+    if [ -f "../engine.db" ]; then
         TS=$(date +%s)
-        mv /opt/xdp-engin../engine.db "/opt/xdp-engin../engine.db.backup.$TS"
+        mv ../engine.db "../engine.db.backup.$TS"
         echo "[*] Backed up DB to engine.db.backup.$TS"
     fi
     # Need to touch it so permissions are right for restorecon
-    touch /opt/xdp-engin../engine.db
-    chmod 666 /opt/xdp-engin../engine.db
-    restorecon -v /opt/xdp-engin../engine.db >/dev/null 2>&1 || true
+    touch ../engine.db
+    chmod 666 ../engine.db
+    restorecon -v ../engine.db >/dev/null 2>&1 || true
 fi
 
 echo "[*] Recreating lab network..."
@@ -57,15 +59,17 @@ fi
 
 if [ "$MANUAL" -eq 1 ]; then
     echo "[*] Manual mode requested. Start the engine with:"
-    echo "    sudo /opt/xdp-engin../engine veth-host ../xdp_prog.bpf.o /tmp/fake_auth.log"
+    echo "    sudo ../engine veth-host ../xdp_prog.bpf.o /tmp/fake_auth.log"
 else
     echo "[*] Starting xdp-engine service..."
-    systemctl start xdp-engine
+    ../engine veth-host &
+    ENGINE_PID=$!
+    sleep 2
     
     echo "[*] Waiting for engine-cli to respond..."
     READY=0
     for _ in {1..10}; do
-        if .../engine-cli stats >/dev/null 2>&1; then
+        if ../engine-cli stats >/dev/null 2>&1; then
             READY=1
             break
         fi

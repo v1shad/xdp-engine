@@ -79,7 +79,7 @@ function run_stage1() {
     done
     
     echo "[*] Checking engine-cli list..."
-    .../engine-cli list | grep "10.10.0.2" || echo "10.10.0.2 not found in blocklist"
+    ../engine-cli list | grep "10.10.0.2" || echo "10.10.0.2 not found in blocklist"
 }
 
 function run_stage2() {
@@ -94,7 +94,7 @@ function run_stage2() {
     done
     
     echo "[*] Checking engine-cli list..."
-    .../engine-cli list | grep "10.10.0.3" || echo "10.10.0.3 not found in blocklist"
+    ../engine-cli list | grep "10.10.0.3" || echo "10.10.0.3 not found in blocklist"
 }
 
 function run_stage3() {
@@ -106,7 +106,7 @@ function run_stage3() {
     ip netns exec attacker hping3 -a 10.10.0.4 -S -p 22 --faster -c 3000 "$TARGET" >/dev/null 2>&1
     
     echo "[*] Checking engine-cli list..."
-    .../engine-cli list | grep "10.10.0.4" || echo "10.10.0.4 not found in blocklist (Expected behavior)"
+    ../engine-cli list | grep "10.10.0.4" || echo "10.10.0.4 not found in blocklist (Expected behavior)"
 }
 
 function run_stage4() {
@@ -122,7 +122,7 @@ function run_stage4() {
     echo '10.10.0.5 - - [04/Oct/2026:12:00:02 +0000] "GET / HTTP/1.1" 200 512 "-" "sqlmap/1.5.8"' >> /tmp/fake_access.log
     
     echo "[*] Checking engine-cli list..."
-    .../engine-cli list | grep "10.10.0.5" || echo "10.10.0.5 not found in blocklist"
+    ../engine-cli list | grep "10.10.0.5" || echo "10.10.0.5 not found in blocklist"
 }
 
 if [[ "$STAGE_OPT" -eq 1 || "$STAGE_OPT" -eq 0 ]]; then run_stage1; fi

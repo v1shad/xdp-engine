@@ -2,13 +2,14 @@
 # verify_phase6.sh - automated acceptance tests for Phase 6 (red team).
 # Safe: only touches the lab (namespace "attacker", veth-host, fake logs).
 set -u
-DB="${ENGINE_DB:-/opt/xdp-engin../engine.db}"
+cd "$(dirname "$0")"
+DB="${ENGINE_DB:-../engine.db}"
 PASS=0; FAIL=0; SKIP=0
 ok()   { echo "[PASS] $1"; PASS=$((PASS+1)); }
 bad()  { echo "[FAIL] $1"; FAIL=$((FAIL+1)); }
 skip() { echo "[SKIP] $1"; SKIP=$((SKIP+1)); }
-q()    { sqlite3 "$DB" "$1" 2>/dev/null; }
-listed() { .../engine-cli list 2>/dev/null; }
+q()    { sqlite3 ../engine.db "$1" 2>/dev/null; }
+listed() { ../engine-cli list 2>/dev/null; }
 
 [ "$(id -u)" -eq 0 ] || { echo "Run with sudo"; exit 2; }
 
@@ -25,7 +26,7 @@ for n in 1 2; do
   if [ $rc -eq 0 ] && echo "$out" | grep -q "READY"; then ok "reset run $n printed READY, exit 0"
   else bad "reset run $n failed (rc=$rc)"; echo "$out" | tail -5; fi
 done
-.../engine-cli stats >/dev/null 2>&1 && ok "engine-cli answers after reset" || bad "engine-cli not answering after reset"
+../engine-cli stats >/dev/null 2>&1 && ok "engine-cli answers after reset" || bad "engine-cli not answering after reset"
 [ "$(q 'select count(*) from events;')" = "0" ] && ok "fresh DB is empty after reset" || bad "DB not empty after reset"
 
 echo "=== T2: --list has no side effects ==="
@@ -77,7 +78,12 @@ echo "=== T7: static safety checks ==="
 grep -q "10.10.0.1" attack_scenarios.sh && ok "target 10.10.0.1 hardcoded" || bad "target not hardcoded"
 grep -nE 'hping3[^#]*\$\{?[1-9]' attack_scenarios.sh | grep -v "\-a" >/dev/null && bad "hping3 target may come from an argument" || ok "no argument-controlled hping3 target"
 grep -nE '/var/log' fuzz_logs.sh attack_scenarios.sh | grep -v '^\s*#' >/dev/null && bad "script references /var/log" || ok "scripts never touch /var/log"
-grep -q "set -u" attack_scenarios.sh && grep -q "set -u" fuzz_logs.sh && grep -q "set -u" reset_demo.sh && ok "all scripts use set -u" || bad "a script is missing set -u"
+grep -q "set -u
+cd "$(dirname "$0")"" attack_scenarios.sh && grep -q "set -u
+cd "$(dirname "$0")"" fuzz_logs.sh && grep -q "set -u
+cd "$(dirname "$0")"" reset_demo.sh && ok "all scripts use set -u
+cd "$(dirname "$0")"" || bad "a script is missing set -u
+cd "$(dirname "$0")""
 grep -nE 'system\(|popen\(' *.cpp *.h 2>/dev/null | grep -q . && bad "system()/popen() found in engine code" || ok "no system()/popen() in engine code"
 
 echo "=== T8: fuzz run ==="
@@ -89,8 +95,8 @@ np=$(echo "$fz" | grep -c '\[PASS\]'); nf=$(echo "$fz" | grep -c '\[FAIL\]')
 sleep 5
 hx=$(q "select hex(user) from events where src_ip='10.20.0.2' limit 1;")
 [ "$hx" = "EFBFBDEFBFBDEFBFBD" ] && ok "UTF-8 regression: invalid bytes sanitized" || bad "UTF-8 regression: hex was '${hx:-none}'"
-systemctl is-active --quiet xdp-engine && ok "engine alive after fuzzing" || bad "engine dead after fuzzing"
-[ "$(sqlite3 "$DB" 'PRAGMA integrity_check;')" = "ok" ] && ok "SQLite integrity ok" || bad "SQLite integrity check failed"
+pgrep -x engine >/dev/null && ok "engine alive after fuzzing" || bad "engine dead after fuzzing"
+[ "$(sqlite3 ../engine.db 'PRAGMA integrity_check;')" = "ok" ] && ok "SQLite integrity ok" || bad "SQLite integrity check failed"
 [ ! -e /tmp/pwned ] && ok "/tmp/pwned does not exist" || bad "/tmp/pwned exists - command injection!"
 
 echo "=== T9: dashboard (optional) ==="
