@@ -675,7 +675,9 @@ int main(int argc, char** argv) {
             Event e;
             e.ts_iso = get_iso_time_str();
             e.source = "xdp";
-            e.type = (d->reason == REASON_RATELIMIT) ? "rate_limit_exceeded" : "xdp_firewall";
+            if (d->reason == REASON_RATELIMIT) e.type = "rate_limit_exceeded";
+            else if (d->reason == REASON_PORTSCAN) e.type = "port_scan";
+            else e.type = "xdp_drop";
             e.src_ip = ip_to_string(d->src_ip);
             e.severity = 4;
             (*on_event_ptr)(e);
