@@ -23,9 +23,9 @@ rm -rf /sys/fs/bpf/xdp_engine
 ip link set dev veth-host xdp off 2>/dev/null || true
 
 echo "[*] Clearing logs and reports..."
-chown root:root ../tmp/fake_auth.log ../tmp/fake_access.log 2>/dev/null || true
-: > ../tmp/fake_auth.log
-: > ../tmp/fake_access.log
+chown root:root /tmp/fake_auth.log /tmp/fake_access.log 2>/dev/null || true
+: > /tmp/fake_auth.log
+: > /tmp/fake_access.log
 rm -f report.md
 
 if [ "$KEEP_DB" -eq 0 ]; then
@@ -57,7 +57,7 @@ fi
 
 if [ "$MANUAL" -eq 1 ]; then
     echo "[*] Manual mode requested. Start the engine with:"
-    echo "    sudo /opt/xdp-engin../engine veth-host ../xdp_prog.bpf.o ../tmp/fake_auth.log"
+    echo "    sudo /opt/xdp-engin../engine veth-host ../xdp_prog.bpf.o /tmp/fake_auth.log"
 else
     echo "[*] Starting xdp-engine service..."
     systemctl start xdp-engine

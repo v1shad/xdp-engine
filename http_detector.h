@@ -16,7 +16,7 @@ public:
 
     void process_line(const std::string& line);
 
-private:
+public:
     void watch_loop(std::stop_token st);
 
     std::string log_file_;

@@ -1,14 +1,14 @@
 #!/bin/bash
 set -u
 
-chown root:root ../tmp/fake_auth.log ../tmp/fake_access.log 2>/dev/null || true
+chown root:root /tmp/fake_auth.log /tmp/fake_access.log 2>/dev/null || true
 if ! ip netns list | grep -q "^attacker\b" || ! ip link show veth-host >/dev/null 2>&1; then
     echo "ERROR: Namespace 'attacker' or interface 'veth-host' missing."
     exit 1
 fi
 
-AUTH_LOG="../tmp/fake_auth.log"
-ACCESS_LOG="../tmp/fake_access.log"
+AUTH_LOG="/tmp/fake_auth.log"
+ACCESS_LOG="/tmp/fake_access.log"
 
 # Find PID
 ENGINE_PID=$(pgrep -f "/opt/xdp-engin../engine" || pgrep -f "../engine")
