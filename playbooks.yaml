@@ -3,3 +3,14 @@ SSH_BRUTE_FORCE:
   - step: block
   - step: notify
   - step: record
+
+HTTP_ATTACK:
+  - step: enrich
+  - step: block
+  - step: record
+
+SCAN_THEN_BRUTE:
+  - step: enrich
+  - step: block
+  - step: notify
+  - step: record
