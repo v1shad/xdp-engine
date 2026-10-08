@@ -752,32 +752,18 @@ int main(int argc, char** argv) {
             if (cmd == "quit") g_running = false;
             else if (cmd == "list")  blocklist.print_blocked(out);
             else if (cmd == "stats") blocklist.print_stats(out);
-            else if (cmd == "alerts") storage.print_last_alerts(10, out);
-            else if (cmd == "limit") {
-                try { engine.set_limit(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
-            }
-            else if (cmd == "mode") {
-                if (arg == "detect") { enforce_mode = false; storage.insert_action({"mode_change", "DETECT", get_iso_time_str(), ""}); print_log("[MODE]", "detect"); out("mode set to detect"); }
-                else if (arg == "enforce") { enforce_mode = true; storage.insert_action({"mode_change", "ENFORCE", get_iso_time_str(), ""}); print_log("[MODE]", "enforce"); out("mode set to enforce"); }
-                else if (arg == "show") { out(enforce_mode ? "enforce" : "detect"); }
-                else { out("error: mode [detect|enforce|show]"); }
-            }
-            else if (cmd == "approve") {
-                try { runner.approve(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
-            }
-            else if (cmd == "deny") {
-                try { runner.deny(std::stoi(arg)); out("ok"); } catch (...) { out("error"); }
-            }
-            else if (cmd == "block" || cmd == "unblock" || cmd == "allow" || cmd == "unallow") {
+            else if (cmd == "block" || cmd == "unblock") {
                 if (auto ip = parse_ipv4_local(arg)) {
                     if (cmd == "block") {
-                        int seconds = arg2.empty() ? 600 : std::stoi(arg2);
-                        blocklist.block(*ip, "manual", std::chrono::seconds(seconds), false, true);
-                        out("ok");
+                        try {
+                            int seconds = arg2.empty() ? 600 : std::stoi(arg2);
+                            blocklist.block(*ip, "manual", std::chrono::seconds(seconds), false, true);
+                            out("ok");
+                        } catch (...) {
+                            out("error: invalid ttl");
+                        }
                     }
                     else if (cmd == "unblock") { blocklist.unblock(*ip); out("ok"); }
-                    else if (cmd == "allow") { blocklist.allow_ip(*ip); out("ok"); }
-                    else if (cmd == "unallow") { blocklist.unallow_ip(*ip); out("ok"); }
                 } else out("invalid IPv4 address");
             } else if (!cmd.empty()) out("unknown command");
         };
