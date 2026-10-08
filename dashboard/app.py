@@ -5,6 +5,10 @@ import time
 
 app = Flask(__name__)
 DB_PATH = os.environ.get("ENGINE_DB", "/opt/xdp-engine/engine.db")
+if not os.path.exists(DB_PATH) and os.path.exists("../engine.db"):
+    DB_PATH = "../engine.db"
+elif not os.path.exists(DB_PATH) and os.path.exists("engine.db"):
+    DB_PATH = "engine.db"
 print(f"[*] Dashboard starting. Using database: {DB_PATH}")
 
 def get_db():
