@@ -56,12 +56,14 @@ make test
 
 ## Two-Laptop Live Showcase (Presentation Script)
 
-This guide is designed as a copy-pasteable script to demonstrate XDP-Engine blocking real attacks across a network using two computers.
+This walkthrough demonstrates XDP-Engine blocking real attacks across a network using two computers.
 
-**Prerequisites:** 
-*   Find your interface (e.g., `wlp8s0` or `eth0`) and your IP address (`ip a`).
-*   Ensure SSH and Nginx are running (`sudo systemctl start sshd nginx`).
-*   Create a dummy password file on the attacker laptop: `echo -e "123456\npassword\nadmin123" > passwords.txt`
+**Prerequisites & Setup:**
+*   **[MY LAPTOP]**: Find your interface (e.g., `wlp8s0`) and IP address (`ip a`). Ensure SSH and Nginx are running (`sudo systemctl start sshd nginx`).
+*   **[FRIEND LINUX/MAC]**: Create a dummy password file: `echo -e "123456\npassword\nadmin123" > passwords.txt`
+*   **[FRIEND WINDOWS]**: Ensure `curl.exe` is available (built into Windows 10+).
+
+*(Note: Windows lacks native equivalents for `hping3` (SYN flood) and `hydra` (brute force). Windows users can use Nmap with `--max-rate` or leave those steps to a Linux friend, or use the provided Windows equivalents where possible.)*
 
 ---
 
@@ -72,102 +74,146 @@ This guide is designed as a copy-pasteable script to demonstrate XDP-Engine bloc
 cd dashboard
 python3 app.py
 ```
-*Open `http://127.0.0.1:5000/?showcase=1` in your browser to view the live dashboard.*
+Open `http://127.0.0.1:5000/?showcase=1` in your browser.
 
 **[MY LAPTOP]** Open Terminal 2 (Engine):
 ```bash
 sudo ./engine wlp8s0
 ```
-*(Replace `wlp8s0` with your active interface. Notice the Preflight checks passing and the engine starting in `DETECT` mode).*
+*(The engine runs its `selftest` preflight, auto-allowlists your gateway, and starts in `DETECT` mode).*
 
 ---
 
-### Phase 2: Application Attacks & Reconnaissance
+### Phase 2: Baseline (Traffic Works)
 
-*(Note: If your friend is on Windows, they can run `nmap`, `hydra`, and `hping3` easily by opening **WSL (Ubuntu)**, or use the native PowerShell alternatives below).*
-
-**[FRIEND LAPTOP]** Attack 1: Network Reconnaissance (Port Scan)
+**[FRIEND LINUX/MAC]**
 ```bash
-# Linux / Mac / WSL
+ping -c 4 <MY_IP>
+```
+
+**[FRIEND WINDOWS]**
+```cmd
+ping -n 4 <MY_IP>
+```
+
+---
+
+### Phase 3: Application Attacks & Reconnaissance (Detect Mode)
+
+Look at your engine terminal and dashboard while these run. You will see events flowing in, and `[DETECTED] would block <IP> (detect mode)` logged, but traffic remains open.
+
+**Attack 1: Network Reconnaissance (Port Scan)**
+**[FRIEND LINUX/MAC]**
+```bash
 nmap -p 1-1000 -T4 <MY_IP>
-
-# Windows (PowerShell native alternative)
-1..100 | % { echo $_; Test-NetConnection <MY_IP> -Port $_ -WarningAction SilentlyContinue }
+```
+**[FRIEND WINDOWS]**
+```cmd
+nmap -Pn -sS -p 1-200 <MY_IP>
+# OR native fallback (slow):
+Test-NetConnection <MY_IP> -Port 22
 ```
 
-**[FRIEND LAPTOP]** Attack 2: Web Exploit (SQL Injection)
+**Attack 2: Web Exploit (SQL Injection & Traversal)**
+**[FRIEND LINUX/MAC]**
 ```bash
-# Linux / Mac
-curl "http://<MY_IP>/?id=1' OR 1=1--"
-
-# Windows (CMD / PowerShell)
-curl.exe "http://<MY_IP>/?id=1' OR 1=1--"
+curl -m 5 "http://<MY_IP>/?id=1' OR 1=1--"
+```
+**[FRIEND WINDOWS]**
+```cmd
+curl.exe -m 5 "http://<MY_IP>/login?user=admin%27%20OR%201=1--"
+curl.exe -m 5 "http://<MY_IP>/../../etc/passwd" --path-as-is
+curl.exe -m 5 -A "sqlmap/1.7" http://<MY_IP>/
 ```
 
-**[FRIEND LAPTOP]** Attack 3: SSH Brute Force
+**Attack 3: SSH Brute Force**
+**[FRIEND LINUX/MAC]**
 ```bash
-# Linux / Mac / WSL
 hydra -l admin -P passwords.txt ssh://<MY_IP>
 ```
-
-**[MY LAPTOP]** Observation:
-Look at your engine terminal and dashboard. You will see `[SCAN]`, `[WEB]`, and `[AUTH]` events flowing in. The engine will log `[DETECTED] would block <FRIEND_IP> (detect mode)`. The attacker is *not* blocked yet, because we are safely observing.
+**[FRIEND WINDOWS]**
+```cmd
+ssh -o PubkeyAuthentication=no nosuchuser@<MY_IP>
+```
+*(For Windows, fail the password prompt 3 times manually to trigger the alert).*
 
 ---
 
-### Phase 3: Switch to Enforce Mode
+### Phase 4: Switch to Enforce Mode
 
 **[MY LAPTOP]** Open Terminal 3 (Control):
 ```bash
 sudo ./engine-cli mode enforce
 ```
-*Watch the Dashboard mode badge instantly pulse Red and switch to ENFORCE.*
+*Watch the Dashboard mode badge instantly switch to ENFORCE.*
 
 ---
 
-### Phase 4: The Kernel Drop
+### Phase 5: Automatic Block & The Kernel Drop
 
-**[FRIEND LAPTOP]** Repeat the SSH Attack:
+**[FRIEND LINUX/MAC]** (or WINDOWS) Repeat the SSH Attack.
+**[MY LAPTOP]** The engine logs `[BLOCKED]` and the IP appears on the active block list. 
+
+**[FRIEND LINUX/MAC]** Try to ping:
 ```bash
-# Linux / WSL
-hydra -l admin -P passwords.txt ssh://<MY_IP>
+ping <MY_IP>
 ```
-**[MY LAPTOP]** The engine will instantly log `[BLOCKED]` and the IP appears on the dashboard's active block list.
-
-**[FRIEND LAPTOP]** The SSH connection completely hangs. The kernel is now dropping their packets at the network card level.
-
-**[MY LAPTOP]** Prove the packets are dying in the kernel using tcpdump:
+**[MY LAPTOP]** Prove the packets are dying in the kernel:
 ```bash
 sudo tcpdump -n -i wlp8s0 host <FRIEND_IP>
+sudo bpftool map dump name blocked_ips
+sudo ./engine-cli stats
 ```
-*You will see the attacker's packets arriving, but your machine sends zero responses back. The OS doesn't even know they exist.*
+*Tcpdump shows packets arriving but no replies.*
 
 ---
 
-### Phase 5: The Volumetric DDoS (SYN Flood)
+### Phase 6: Ping Flood & DDoS While Blocked
 
-**[FRIEND LAPTOP]** Launch a SYN Flood:
+**[FRIEND LINUX/MAC]**
 ```bash
-# Linux / Mac / WSL (Requires root)
 sudo hping3 -S -p 80 --flood <MY_IP>
 ```
-*(Windows native tools cannot easily forge raw SYN packets. Your friend must use WSL or a Linux VM for this specific attack).*
-
-**[MY LAPTOP]** The dashboard's "Total Packets Dropped" speedometer will skyrocket. The engine will log `[FLOOD]` and `[DROPPING]` with massive rate statistics. Despite millions of packets hitting your machine, your CPU remains idle because XDP kills them in the driver.
+**[FRIEND WINDOWS]** (Ping flood substitute)
+```cmd
+ping -t -l 1400 <MY_IP>
+```
+**[MY LAPTOP]** The dashboard's "Total Packets Dropped" speedometer skyrockets. The engine logs massive drop rates. CPU remains idle.
 
 ---
 
-### Phase 6: Teardown
+### Phase 7: Recovery, Allowlist & Report
 
-**[MY LAPTOP]** Remove the block, or reset the engine entirely:
+**[MY LAPTOP]** Manually block, test allowlist, and reset:
 ```bash
-# Unblock just your friend:
+# Unblock the friend manually:
 sudo ./engine-cli unblock <FRIEND_IP>
 
-# Or completely wipe and reset the engine state:
+# Test Allowlist (gateway is immune):
+sudo ./engine-cli allow 192.168.1.1
+
+# Generate the incident report:
+sudo ./engine report
+
+# Reset the engine state:
 sudo ./engine reset
 sudo ./engine cleanup wlp8s0
 ```
+
+---
+
+## Troubleshooting Guide
+
+If the dashboard or engine does not reflect attacks, run the self-test tool first:
+**[MY LAPTOP]** `sudo ./engine selftest`
+
+| Symptom | Root Cause | Fix |
+| :--- | :--- | :--- |
+| **Live log lines not appearing** | Log rotation/EOF desync in C++, or HttpDetector thread inactive | Fixed in v10: `LogTailer` now forcefully resyncs with the OS on EOF, and `HttpDetector` thread is correctly spawned. |
+| **Stats show no packets** | eBPF `PERCPU` array memory alignment mismatch | Fixed in v10: C++ engine now dynamically sizes buffers to `libbpf_num_possible_cpus()` to correctly sum stats. |
+| **SQLi web events ignored** | The `HttpDetector` thread was not started | Fixed in v10. The regex is case-insensitive and successfully decodes `%20` (e.g., `OR 1=1`). |
+| **Pings not visible** | ICMP passed without submitting events | Fixed in v10: Added `REASON_ICMP` rate-limited ringbuf submissions (1 per 5s) directly inside `xdp_prog.bpf.c`. |
+| **Dashboard fails (500 Error)** | Dashboard tried to read `/opt/xdp-engine/engine.db` | Fixed in v10: Both engine and app read `ENGINE_DB` or default dynamically using absolute paths. |
 
 ## Configuration
 *   `rules.yaml`: Defines thresholds and Sliding Windows.
