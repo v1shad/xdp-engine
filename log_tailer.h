@@ -72,6 +72,7 @@ public:
                 if (in.eof()) {
                     in.clear();
                     last_offset = in.tellg();
+                    in.seekg(last_offset, std::ios::beg); // Force OS resync
                 } else {
                     in.close();
                 }
