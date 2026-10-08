@@ -84,18 +84,29 @@ sudo ./engine wlp8s0
 
 ### Phase 2: Application Attacks & Reconnaissance
 
-**[FRIEND LAPTOP]** Attack 1: Network Reconnaissance (Nmap Scan)
+*(Note: If your friend is on Windows, they can run `nmap`, `hydra`, and `hping3` easily by opening **WSL (Ubuntu)**, or use the native PowerShell alternatives below).*
+
+**[FRIEND LAPTOP]** Attack 1: Network Reconnaissance (Port Scan)
 ```bash
+# Linux / Mac / WSL
 nmap -p 1-1000 -T4 <MY_IP>
+
+# Windows (PowerShell native alternative)
+1..100 | % { echo $_; Test-NetConnection <MY_IP> -Port $_ -WarningAction SilentlyContinue }
 ```
 
 **[FRIEND LAPTOP]** Attack 2: Web Exploit (SQL Injection)
 ```bash
+# Linux / Mac
 curl "http://<MY_IP>/?id=1' OR '1'='1"
+
+# Windows (CMD / PowerShell)
+curl.exe "http://<MY_IP>/?id=1' OR '1'='1"
 ```
 
 **[FRIEND LAPTOP]** Attack 3: SSH Brute Force
 ```bash
+# Linux / Mac / WSL
 hydra -l admin -P passwords.txt ssh://<MY_IP>
 ```
 
@@ -118,6 +129,7 @@ sudo ./engine-cli mode enforce
 
 **[FRIEND LAPTOP]** Repeat the SSH Attack:
 ```bash
+# Linux / WSL
 hydra -l admin -P passwords.txt ssh://<MY_IP>
 ```
 **[MY LAPTOP]** The engine will instantly log `[BLOCKED]` and the IP appears on the dashboard's active block list.
@@ -136,8 +148,10 @@ sudo tcpdump -n -i wlp8s0 host <FRIEND_IP>
 
 **[FRIEND LAPTOP]** Launch a SYN Flood:
 ```bash
+# Linux / Mac / WSL (Requires root)
 sudo hping3 -S -p 80 --flood <MY_IP>
 ```
+*(Windows native tools cannot easily forge raw SYN packets. Your friend must use WSL or a Linux VM for this specific attack).*
 
 **[MY LAPTOP]** The dashboard's "Total Packets Dropped" speedometer will skyrocket. The engine will log `[FLOOD]` and `[DROPPING]` with massive rate statistics. Despite millions of packets hitting your machine, your CPU remains idle because XDP kills them in the driver.
 
