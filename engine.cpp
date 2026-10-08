@@ -557,9 +557,12 @@ int main(int argc, char** argv) {
     };
     std::string pwd_auth = check_ssh_conf("/etc/ssh/sshd_config");
     if (pwd_auth.empty()) {
-        for (const auto& entry : std::filesystem::directory_iterator("/etc/ssh/sshd_config.d")) {
+        std::error_code ec;
+        if (std::filesystem::exists("/etc/ssh/sshd_config.d", ec)) {
+            for (const auto& entry : std::filesystem::directory_iterator("/etc/ssh/sshd_config.d", ec)) {
             pwd_auth = check_ssh_conf(entry.path());
             if (!pwd_auth.empty()) break;
+        }
         }
     }
     if (pwd_auth.find("yes") != std::string::npos) std::cout << "PASS: " << pwd_auth << "\n";
