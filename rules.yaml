@@ -5,6 +5,8 @@
   window_seconds: 60
   severity: high
   mitre: T1110
+  action: block
+  block_seconds: 600
 
 - name: HTTP_ATTACK
   type: threshold
@@ -13,6 +15,8 @@
   window_seconds: 60
   severity: critical
   mitre: T1190
+  action: block
+  block_seconds: 600
   patterns: ["union.*select", "' or 1=1", "\\.\\./", "%2e%2e"]
 
 - name: SCAN_THEN_BRUTE
@@ -21,3 +25,5 @@
   within_seconds: 300
   severity: critical
   mitre: [T1046, T1110]
+  action: block
+  block_seconds: 3600
