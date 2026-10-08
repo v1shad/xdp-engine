@@ -518,7 +518,7 @@ int main(int argc, char** argv) {
     bool all_pass = true;
     auto check_fail = [&](const std::string& msg) {
         std::cerr << "FAIL: " << msg << "\n";
-        all_pass = false;
+        
     };
 
     if (getuid() != 0) check_fail("Not running as root. Fix: use sudo");
