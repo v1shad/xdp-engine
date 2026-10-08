@@ -1,5 +1,6 @@
 #!/bin/bash
 set -u
+cd "$(dirname "$0")"
 
 chown root:root /tmp/fake_auth.log /tmp/fake_access.log 2>/dev/null || true
 if ! ip netns list | grep -q "^attacker\b" || ! ip link show veth-host >/dev/null 2>&1; then

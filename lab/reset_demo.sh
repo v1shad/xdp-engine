@@ -1,5 +1,6 @@
 #!/bin/bash
-set -ux
+set -u
+cd "$(dirname "$0")"
 
 MANUAL=0
 KEEP_DB=0
@@ -18,6 +19,7 @@ if ! ip netns list | grep -q "^attacker\b" || ! ip link show veth-host >/dev/nul
 fi
 
 echo "[*] Stopping service and clearing BPF maps..."
+systemctl stop xdp-engine 2>/dev/null || true
 pkill -x engine 2>/dev/null || true
 sleep 1
 ../engine cleanup veth-host 2>/dev/null || true
@@ -68,7 +70,7 @@ else
     echo "[*] Waiting for engine-cli to respond..."
     READY=0
     for _ in {1..10}; do
-        if ../engine-cli stats >/dev/null 2>&1; then
+        if timeout 10 ../engine-cli stats >/dev/null 2>&1; then
             READY=1
             break
         fi

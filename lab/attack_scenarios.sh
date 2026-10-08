@@ -1,5 +1,6 @@
 #!/bin/bash
 set -u
+cd "$(dirname "$0")"
 
 chown root:root /tmp/fake_auth.log /tmp/fake_access.log 2>/dev/null || true
 # Check for required environment

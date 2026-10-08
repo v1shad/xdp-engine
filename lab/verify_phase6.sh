@@ -22,9 +22,9 @@ ip link show veth-host >/dev/null 2>&1 && ok "veth-host exists" || bad "veth-hos
 
 echo "=== T1: reset_demo.sh works twice in a row ==="
 for n in 1 2; do
-  out=$(./reset_demo.sh 2>&1); rc=$?
+  out=$(./reset_demo.sh < /dev/null 2>&1); rc=$?
   if [ $rc -eq 0 ] && echo "$out" | grep -q "READY"; then ok "reset run $n printed READY, exit 0"
-  else bad "reset run $n failed (rc=$rc)"; echo "$out" | tail -5; fi
+  else bad "reset run $n failed (rc=$rc)"; echo "$out"; fi
 done
 ../engine-cli stats >/dev/null 2>&1 && ok "engine-cli answers after reset" || bad "engine-cli not answering after reset"
 [ "$(q 'select count(*) from events;')" = "0" ] && ok "fresh DB is empty after reset" || bad "DB not empty after reset"
@@ -59,7 +59,7 @@ sleep 5
 ip netns exec attacker ping -c 2 -W 2 -I 10.10.0.4 10.10.0.1 >/dev/null 2>&1 && ok "10.10.0.4 can ping again" || bad "10.10.0.4 still cut off"
 
 echo "=== T5: single stage isolation ==="
-./reset_demo.sh >/dev/null 2>&1
+./reset_demo.sh < /dev/null >/dev/null 2>&1
 ./attack_scenarios.sh --stage 2 --pause 1 >/dev/null 2>&1
 sleep 6
 L=$(listed)
@@ -67,7 +67,7 @@ echo "$L" | grep -q "10.10.0.3" && ok "--stage 2 blocked .3" || bad "--stage 2 d
 echo "$L" | grep -q "10.10.0.2" && bad "--stage 2 also touched .2" || ok "--stage 2 left .2 alone"
 
 echo "=== T6: Ctrl-C cleanup leaves no hping3 behind ==="
-./reset_demo.sh >/dev/null 2>&1
+./reset_demo.sh < /dev/null >/dev/null 2>&1
 ./attack_scenarios.sh --stage 3 >/dev/null 2>&1 &
 APID=$!
 sleep 2; kill -INT "$APID" 2>/dev/null; wait "$APID" 2>/dev/null
@@ -82,7 +82,7 @@ grep -q "set -u" attack_scenarios.sh && grep -q "set -u" fuzz_logs.sh && grep -q
 grep -nE 'system\(|popen\(' *.cpp *.h 2>/dev/null | grep -q . && bad "system()/popen() found in engine code" || ok "no system()/popen() in engine code"
 
 echo "=== T8: fuzz run ==="
-./reset_demo.sh >/dev/null 2>&1
+./reset_demo.sh < /dev/null >/dev/null 2>&1
 fz=$(./fuzz_logs.sh 2>&1); echo "$fz" | tail -15
 np=$(echo "$fz" | grep -c '\[PASS\]'); nf=$(echo "$fz" | grep -c '\[FAIL\]')
 [ "$nf" -eq 0 ] && ok "fuzz: zero FAIL lines" || bad "fuzz: $nf FAIL lines"
