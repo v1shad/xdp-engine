@@ -78,12 +78,7 @@ echo "=== T7: static safety checks ==="
 grep -q "10.10.0.1" attack_scenarios.sh && ok "target 10.10.0.1 hardcoded" || bad "target not hardcoded"
 grep -nE 'hping3[^#]*\$\{?[1-9]' attack_scenarios.sh | grep -v "\-a" >/dev/null && bad "hping3 target may come from an argument" || ok "no argument-controlled hping3 target"
 grep -nE '/var/log' fuzz_logs.sh attack_scenarios.sh | grep -v '^\s*#' >/dev/null && bad "script references /var/log" || ok "scripts never touch /var/log"
-grep -q "set -u
-cd "$(dirname "$0")"" attack_scenarios.sh && grep -q "set -u
-cd "$(dirname "$0")"" fuzz_logs.sh && grep -q "set -u
-cd "$(dirname "$0")"" reset_demo.sh && ok "all scripts use set -u
-cd "$(dirname "$0")"" || bad "a script is missing set -u
-cd "$(dirname "$0")""
+grep -q "set -u" attack_scenarios.sh && grep -q "set -u" fuzz_logs.sh && grep -q "set -u" reset_demo.sh && ok "all scripts use set -u" || bad "a script is missing set -u"
 grep -nE 'system\(|popen\(' *.cpp *.h 2>/dev/null | grep -q . && bad "system()/popen() found in engine code" || ok "no system()/popen() in engine code"
 
 echo "=== T8: fuzz run ==="
