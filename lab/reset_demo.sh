@@ -62,8 +62,7 @@ if [ "$MANUAL" -eq 1 ]; then
     echo "    sudo ../engine veth-host ../xdp_prog.bpf.o /tmp/fake_auth.log"
 else
     echo "[*] Starting xdp-engine service..."
-    ../engine veth-host &
-    ENGINE_PID=$!
+    (cd .. && ./engine veth-host &)
     sleep 2
     
     echo "[*] Waiting for engine-cli to respond..."
