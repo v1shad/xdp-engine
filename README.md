@@ -143,7 +143,7 @@ ssh -o PubkeyAuthentication=no nosuchuser@<MY_IP>
 
 **[MY LAPTOP]** Open Terminal 3 (Control):
 ```bash
-sudo ./engine-cli mode enforce
+sudo ./engine --enforce
 ```
 *Watch the Dashboard mode badge instantly switch to ENFORCE.*
 
@@ -182,21 +182,14 @@ ping -t -l 1400 <MY_IP>
 
 ---
 
-### Phase 7: Recovery, Allowlist & Report
+### Phase 7: Recovery
 
-**[MY LAPTOP]** Manually block, test allowlist, and reset:
+**[MY LAPTOP]** Manually unblock the friend and exit:
 ```bash
 # Unblock the friend manually:
 sudo ./engine-cli unblock <FRIEND_IP>
 
-# Test Allowlist (gateway is immune):
-sudo ./engine-cli allow 192.168.1.1
-
-# Generate the incident report:
-sudo ./engine report
-
-# Reset the engine state:
-sudo ./engine reset
+# Clean up the XDP attachment:
 sudo ./engine cleanup wlp8s0
 ```
 
@@ -231,12 +224,9 @@ playbooks:
 ## Commands
 | Command | Description |
 |---|---|
-| `engine-cli mode enforce` | Switch to active blocking mode. |
 | `engine-cli block <IP>` | Manually block an IP. |
-| `engine-cli allow <IP>` | Add an IP to the allowlist (never blocked). |
 | `engine-cli list` | List actively blocked IPs. |
 | `engine-cli stats` | View XDP drop statistics. |
-| `engine report` | Generate a Markdown report of incidents. |
 
 ## Benchmarks
 Tested on a `veth` virtual interface. The XDP drop logic performs identically to standard `iptables-raw` equivalents within noise margins. Results are stored in `bench_results.txt`.
