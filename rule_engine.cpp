@@ -67,6 +67,11 @@ std::vector<Alert> RuleEngine::process(const Event& e) {
                 while (!attempts.empty() && now - attempts.front() > rule.window) {
                     attempts.pop_front();
                 }
+                
+                if (attempts.empty()) {
+                    ip_map.erase(e.src_ip);
+                    continue;
+                }
 
                 if (attempts.size() >= rule.threshold) {
                     Alert a;
@@ -102,6 +107,9 @@ std::vector<Alert> RuleEngine::process(const Event& e) {
                     if (!rule.steps.empty() && rule.steps[0] == e.type) {
                         state.next_step_idx = 1;
                         state.start_time = now;
+                    } else {
+                        seq_states_[rule.name].erase(e.src_ip);
+                        continue;
                     }
                 } else if (rule.steps[state.next_step_idx] == e.type) {
                     // Next step matched
