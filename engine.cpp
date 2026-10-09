@@ -324,7 +324,7 @@ public:
         allowed_fd_ = bpf_map__fd(allowed);
         blocked_fd_ = bpf_map__fd(blocked);
         
-        bpf_map* stats = bpf_object__find_map_by_name(obj_.get(), "ip_stats");
+        bpf_map* stats = bpf_object__find_map_by_name(obj_.get(), "stats");
         stats_fd_ = stats ? bpf_map__fd(stats) : -1;
         
         bpf_map* events = bpf_object__find_map_by_name(obj_.get(), "events");
