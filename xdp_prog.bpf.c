@@ -20,7 +20,7 @@ struct {
 /* ---------- MAP 2: blocklist (key = source IPv4, value = drop counter) ---------- */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);   // hash table: ~O(1) lookup
-    __uint(max_entries, 10240);        // capacity is fixed at creation; the kernel preallocates
+    __uint(max_entries, 1000000);        // capacity is fixed at creation; the kernel preallocates
     __type(key, __u32);                // IPv4 address as 32-bit integer (network byte order)
     __type(value, struct block_record); // drop counter + expiry timestamp
 } blocked_ips SEC(".maps");            // SEC(".maps") puts this into the ELF ".maps" section
@@ -49,7 +49,7 @@ struct rate_state_record {
 /* ---------- MAP 5: LRU hash for SYN rate limiting ---------- */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 65536);
+    __uint(max_entries, 1000000);
     __type(key, __u32);
     __type(value, struct rate_state_record);
 } rate_state SEC(".maps");
@@ -74,7 +74,7 @@ struct scan_state_record {
 /* ---------- MAP 8: port scan state ---------- */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
-    __uint(max_entries, 65536);
+    __uint(max_entries, 1000000);
     __type(key, __u32);    // src_ip
     __type(value, struct scan_state_record);
 } scan_state SEC(".maps");

@@ -15,6 +15,44 @@ Detect from anywhere, enforce at kernel speed, respond with guardrails, record e
 - **Observability:** Live asynchronous Python Dashboard tracking hardware graphs and threat alerts.
 - **Safety Guardrails:** Hardcoded auto-allowlisting for loopback and default gateways to prevent self-lockout.
 
+
+## Architecture
+
+```mermaid
+flowchart TD
+    A["Log lines & Network"] --> B("Detectors & RingBuffer<br><i>http_detector.cpp, log_tailer.h</i>")
+    B --> C{"Rule Engine<br><i>rule_engine.cpp<br>rules.yaml</i>"}
+    C -- Match --> D("Playbook Runner<br><i>playbook_runner.cpp<br>playbooks.yaml</i>")
+    D -- Audit Trail --> E[("SQLite Database<br><i>storage.cpp -> engine.db</i>")]
+    D -- Enforce --> F("eBPF Map Update<br><i>engine.cpp</i>")
+    F --> G["XDP_DROP<br><i>xdp_prog.bpf.c</i>"]
+```
+
+## Installation & Setup
+
+**Prerequisites:** Linux Kernel 5.8+ with BTF support.
+*   Ubuntu: `sudo apt install clang llvm libbpf-dev libelf-dev libsqlite3-dev libyaml-cpp-dev libgtest-dev python3-flask`
+*   Fedora: `sudo dnf install clang llvm libbpf-devel elfutils-libelf-devel sqlite-devel yaml-cpp-devel gtest-devel python3-flask`
+
+**Build and Install:**
+```bash
+git clone https://github.com/v1shad/xdp-engine.git
+cd xdp-engine
+
+# The install script compiles the C++ Engine, eBPF object, and installs the Systemd service
+sudo ./install.sh
+```
+
+**Running the Engine:**
+```bash
+# Start the backend engine (attached to wlp8s0 in ENFORCE mode)
+sudo systemctl start xdp-engine
+
+# Start the dashboard UI (in a separate terminal)
+cd dashboard
+python3 app.py
+```
+
 ## Testing the Defenses (Attacker Simulation)
 
 To safely verify the firewall, you can launch these simulated attacks.

@@ -1,3 +1,8 @@
 engine
 *.o
 .env
+
+engine.db*
+engine-cli
+__pycache__/
+
