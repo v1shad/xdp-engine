@@ -233,32 +233,23 @@ public:
 
     std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t> get_stats() {
         int ncpus = libbpf_num_possible_cpus();
-        std::vector<std::uint64_t> stats_vals(ncpus);
+        std::uint64_t stats_vals[256] = {0};
         std::uint64_t dropped = 0, passed = 0;
         std::uint32_t key_dropped = 0, key_passed = 1;
-        if (bpf_map_lookup_elem(stats_fd_, &key_dropped, stats_vals.data()) == 0) {
-            for(int i=0; i<ncpus; i++) dropped += stats_vals[i];
+        if (bpf_map_lookup_elem(stats_fd_, &key_dropped, stats_vals) == 0) {
+            for(int i=0; i<ncpus && i<256; i++) dropped += stats_vals[i];
         }
-        if (bpf_map_lookup_elem(stats_fd_, &key_passed, stats_vals.data()) == 0) {
-            for(int i=0; i<ncpus; i++) passed += stats_vals[i];
+        if (bpf_map_lookup_elem(stats_fd_, &key_passed, stats_vals) == 0) {
+            for(int i=0; i<ncpus && i<256; i++) passed += stats_vals[i];
         }
         
         std::uint64_t tcp=0, udp=0, icmp=0, other=0;
-        std::uint32_t proto_tcp=6, proto_udp=17, proto_icmp=1;
-        std::vector<std::uint64_t> vals(ncpus);
-        if (bpf_map_lookup_elem(proto_stats_fd_, &proto_tcp, vals.data()) == 0) for(int i=0; i<ncpus; i++) tcp += vals[i];
-        if (bpf_map_lookup_elem(proto_stats_fd_, &proto_udp, vals.data()) == 0) for(int i=0; i<ncpus; i++) udp += vals[i];
-        if (bpf_map_lookup_elem(proto_stats_fd_, &proto_icmp, vals.data()) == 0) for(int i=0; i<ncpus; i++) icmp += vals[i];
-        
-        std::uint32_t k = 0, nk;
-        while (bpf_map_get_next_key(proto_stats_fd_, &k, &nk) == 0) {
-            if (nk != proto_tcp && nk != proto_udp && nk != proto_icmp) {
-                if (bpf_map_lookup_elem(proto_stats_fd_, &nk, vals.data()) == 0) {
-                    for(int i=0; i<ncpus; i++) other += vals[i];
-                }
-            }
-            k = nk;
-        }
+        std::uint32_t proto_tcp=0, proto_udp=1, proto_icmp=2, proto_other=3;
+        std::uint64_t vals[256] = {0};
+        if (bpf_map_lookup_elem(proto_stats_fd_, &proto_tcp, vals) == 0) for(int i=0; i<ncpus && i<256; i++) tcp += vals[i];
+        if (bpf_map_lookup_elem(proto_stats_fd_, &proto_udp, vals) == 0) for(int i=0; i<ncpus && i<256; i++) udp += vals[i];
+        if (bpf_map_lookup_elem(proto_stats_fd_, &proto_icmp, vals) == 0) for(int i=0; i<ncpus && i<256; i++) icmp += vals[i];
+        if (bpf_map_lookup_elem(proto_stats_fd_, &proto_other, vals) == 0) for(int i=0; i<ncpus && i<256; i++) other += vals[i];
         return {dropped, passed, tcp, udp, icmp, other};
     }
 
