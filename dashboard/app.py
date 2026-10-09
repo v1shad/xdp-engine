@@ -38,7 +38,13 @@ def api_summary():
     total_events = db.execute("SELECT count(*) FROM events").fetchone()[0]
     total_alerts = db.execute("SELECT count(*) FROM alerts").fetchone()[0]
     # Estimate active blocks (blocks in the last 10 minutes)
-    active_blocks = db.execute("SELECT count(*) FROM actions WHERE action='block' AND datetime(ts) > datetime('now', '-10 minutes')").fetchone()[0]
+    active_blocks = db.execute("""
+        SELECT count(*) FROM actions a 
+        WHERE action='block' AND datetime(ts) > datetime('now', '-10 minutes')
+        AND NOT EXISTS (
+            SELECT 1 FROM actions act WHERE act.action='unblocked' AND act.src_ip = a.src_ip AND act.ts >= a.ts
+        )
+    """).fetchone()[0]
     
     # Total drops (max dropped metric)
     row = db.execute("SELECT dropped FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
@@ -154,7 +160,7 @@ def api_panels():
             SELECT 1 FROM actions act 
             WHERE act.action = 'unblocked' 
             AND act.src_ip = a.src_ip 
-            AND act.ts > a.ts
+            AND act.ts >= a.ts
         )
     """).fetchall()
     
