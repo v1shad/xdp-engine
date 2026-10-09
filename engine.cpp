@@ -600,7 +600,7 @@ int main(int argc, char** argv) {
         storage.insert_action({"mode_change", mode_str, get_iso_time_str(), ""});
 
         RuleEngine rule_engine{"rules.yaml"};
-        if (threshold > 0 || window > 0) rule_engine.override_rules(threshold, window);
+        // override_rules removed to respect rules.yaml
 
         std::string bpf_obj = "xdp_prog.bpf.o";
         char proc_exe[256];

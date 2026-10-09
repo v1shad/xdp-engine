@@ -150,6 +150,12 @@ def api_panels():
         FROM alerts a 
         LEFT JOIN offenders o ON a.src_ip = o.ip 
         WHERE a.action = 'block' AND a.block_seconds > 0
+        AND NOT EXISTS (
+            SELECT 1 FROM actions act 
+            WHERE act.action = 'unblocked' 
+            AND act.src_ip = a.src_ip 
+            AND act.ts > a.ts
+        )
     """).fetchall()
     
     active_blocks = []
