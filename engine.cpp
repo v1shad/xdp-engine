@@ -233,12 +233,14 @@ public:
 
     std::tuple<std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t> get_stats() {
         int ncpus = libbpf_num_possible_cpus();
-        std::uint32_t zero = 0;
-        struct Stats { std::uint64_t dropped, passed; };
-        std::vector<Stats> global_stats(ncpus);
+        std::vector<std::uint64_t> stats_vals(ncpus);
         std::uint64_t dropped = 0, passed = 0;
-        if (bpf_map_lookup_elem(stats_fd_, &zero, global_stats.data()) == 0) {
-            for(int i=0; i<ncpus; i++) { dropped += global_stats[i].dropped; passed += global_stats[i].passed; }
+        std::uint32_t key_dropped = 0, key_passed = 1;
+        if (bpf_map_lookup_elem(stats_fd_, &key_dropped, stats_vals.data()) == 0) {
+            for(int i=0; i<ncpus; i++) dropped += stats_vals[i];
+        }
+        if (bpf_map_lookup_elem(stats_fd_, &key_passed, stats_vals.data()) == 0) {
+            for(int i=0; i<ncpus; i++) passed += stats_vals[i];
         }
         
         std::uint64_t tcp=0, udp=0, icmp=0, other=0;
