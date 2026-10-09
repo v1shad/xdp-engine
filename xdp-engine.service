@@ -5,9 +5,9 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/xdp-engine
-# By default, runs in DETECT mode on eth0. Add --enforce to drop traffic.
-ExecStart=/opt/xdp-engine/engine eth0
-ExecStop=/opt/xdp-engine/engine cleanup eth0
+# By default, runs in DETECT mode on wlp8s0. Add --enforce to drop traffic.
+ExecStart=/opt/xdp-engine/engine wlp8s0
+ExecStop=/opt/xdp-engine/engine cleanup wlp8s0
 Restart=on-failure
 
 [Install]

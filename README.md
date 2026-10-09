@@ -141,9 +141,10 @@ ssh -o PubkeyAuthentication=no nosuchuser@<MY_IP>
 
 ### Phase 4: Switch to Enforce Mode
 
-**[MY LAPTOP]** Open Terminal 3 (Control):
+**[MY LAPTOP]** Restart the engine in enforce mode (Terminal 2):
 ```bash
-sudo ./engine --enforce
+# Press Ctrl+C in Terminal 2 to stop the Detect engine
+sudo ./engine --enforce wlp8s0
 ```
 *Watch the Dashboard mode badge instantly switch to ENFORCE.*
 
@@ -229,7 +230,7 @@ playbooks:
 | `engine-cli stats` | View XDP drop statistics. |
 
 ## Benchmarks
-Tested on a `veth` virtual interface. The XDP drop logic performs identically to standard `iptables-raw` equivalents within noise margins. Results are stored in `bench_results.txt`.
+Tested on a `veth` virtual interface. The XDP drop logic performs identically to standard `iptables-raw` equivalents within noise margins.
 
 ## Limitations
 *   IPv4 only.
@@ -240,7 +241,6 @@ Tested on a `veth` virtual interface. The XDP drop logic performs identically to
 *   `engine.cpp`: Core daemon and orchestration.
 *   `rule_engine.cpp`: Stateful sliding windows.
 *   `xdp_prog.bpf.c`: Kernel-space drop logic.
-*   `lab/`: Scripts for local virtual-interface testing.
 
 ## Safety Notice
 Only run network tests on machines and networks you explicitly own or have permission to test.
