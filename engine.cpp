@@ -459,6 +459,8 @@ int main(int argc, char** argv) {
         if (access("engine.db", F_OK) == 0) {
             std::string backup = "engine.db.backup." + std::to_string(std::time(nullptr));
             std::filesystem::rename("engine.db", backup);
+            if (access("engine.db-wal", F_OK) == 0) std::filesystem::rename("engine.db-wal", backup + "-wal");
+            if (access("engine.db-shm", F_OK) == 0) std::filesystem::rename("engine.db-shm", backup + "-shm");
             std::cout << "Moved engine.db to " << backup << "\n";
         } else if (access("/opt/xdp-engine/engine.db", F_OK) == 0) {
             std::string backup = "/opt/xdp-engine/engine.db.backup." + std::to_string(std::time(nullptr));
