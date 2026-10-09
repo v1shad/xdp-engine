@@ -196,6 +196,33 @@ sudo ./engine cleanup wlp8s0
 
 ---
 
+
+## Testing the Defenses
+
+To safely verify that the engine is intercepting attacks on your live network, you can run these commands from another machine (or from a separate terminal locally). 
+
+*Note: Replace `<MY_IP>` with the IP address of the machine running the XDP Engine (e.g., `127.0.0.1` for local tests).*
+
+### 1. Web Exploits (SQL Injection / Path Traversal)
+Fires a malicious HTTP payload that the engine parses from Nginx/Apache logs.
+*   **Linux / Mac:** `curl -m 5 "http://<MY_IP>/?id=1%27%20OR%201=1--"`
+*   **Windows (PowerShell):** `Invoke-WebRequest -TimeoutSec 5 -Uri "http://<MY_IP>/?id=1%27%20OR%201=1--"`
+
+### 2. SSH Brute Force
+Triggers the threshold rule (e.g., >5 failed logins in 60s) by rapidly failing SSH authentication.
+*   **Linux / Mac:** `for i in {1..6}; do ssh -o BatchMode=yes -o ConnectTimeout=1 fakeuser@<MY_IP>; done`
+*   **Windows (PowerShell):** `1..6 | ForEach-Object { ssh -o BatchMode=yes -o ConnectTimeout=1 fakeuser@<MY_IP> }`
+
+### 3. Network Reconnaissance (Port Scans)
+The kernel natively tracks unique destination ports for SYN packets. Scanning >10 ports triggers the `port_scan` sequence rule.
+*   **Linux / Mac (Nmap):** `nmap -Pn -sS -p 1-20 <MY_IP>`
+*   **Windows (PowerShell):** `1..15 | ForEach-Object { Test-NetConnection -ComputerName <MY_IP> -Port $_ -WarningAction SilentlyContinue }`
+
+### 4. TCP SYN Floods (Volumetric DDoS)
+The kernel tracks SYN rates and automatically drops packets (without passing them to the OS) if they exceed 200 packets/second.
+*   **Linux / Mac:** `sudo hping3 -S -p 80 --flood <MY_IP>`
+*   **Windows:** *(Requires external tools like Nmap/nping)* `nping --tcp-connect -p 80 --rate=500 -c 1000 <MY_IP>`
+
 ## Troubleshooting Guide
 
 If the dashboard or engine does not reflect attacks, run the self-test tool first:
