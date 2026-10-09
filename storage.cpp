@@ -298,3 +298,10 @@ void Storage::generate_report(const std::string& path) {
     }
     out << "\n";
 }
+
+void Storage::wipe_history() {
+    std::lock_guard<std::mutex> lock(db_mutex_);
+    char* err = nullptr;
+    sqlite3_exec(db_.get(), "DELETE FROM events; DELETE FROM alerts; DELETE FROM actions; DELETE FROM metrics; DELETE FROM offenders;", nullptr, nullptr, &err);
+    if (err) sqlite3_free(err);
+}

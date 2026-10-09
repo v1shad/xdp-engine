@@ -36,6 +36,7 @@ public:
     void insert_event(const Event& e);
     void insert_alert(const Alert& a);
     void insert_action(const ActionRecord& act);
+    void wipe_history();
     void insert_metrics(uint64_t ts, uint64_t dropped, uint64_t passed, uint64_t tcp, uint64_t udp, uint64_t icmp, uint64_t other, int syn_limit, const std::string& xdp_mode);
     
     int get_offense_count(const std::string& ip);

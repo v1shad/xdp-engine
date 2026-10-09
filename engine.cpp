@@ -456,22 +456,13 @@ int main(int argc, char** argv) {
         std::filesystem::remove_all("/sys/fs/bpf/xdp_engine");
         std::cout << "Removed pinned maps from /sys/fs/bpf/xdp_engine\n";
         unlink("/run/xdp_engine.sock");
-        if (access("engine.db", F_OK) == 0) {
-            std::string backup = "engine.db.backup." + std::to_string(std::time(nullptr));
-            std::filesystem::rename("engine.db", backup);
-            if (access("engine.db-wal", F_OK) == 0) std::filesystem::rename("engine.db-wal", backup + "-wal");
-            if (access("engine.db-shm", F_OK) == 0) std::filesystem::rename("engine.db-shm", backup + "-shm");
-            std::cout << "Moved engine.db to " << backup << "\n";
-        } else if (access("/opt/xdp-engine/engine.db", F_OK) == 0) {
-            std::string backup = "/opt/xdp-engine/engine.db.backup." + std::to_string(std::time(nullptr));
-            std::filesystem::rename("/opt/xdp-engine/engine.db", backup);
-            std::cout << "Moved /opt/xdp-engine/engine.db to " << backup << "\n";
-        }
+        // Database renaming removed; history is wiped inside instead.
         return 0;
     }
 
     if (cmd_or_iface == "report") {
         Storage storage{"engine.db"};
+        storage.wipe_history();
         storage.generate_report("report.md");
         std::cout << "Report written to report.md\n";
         
@@ -605,6 +596,7 @@ int main(int argc, char** argv) {
 
     try {
         Storage storage{"engine.db"};
+        storage.wipe_history();
         storage.insert_action({"mode_change", mode_str, get_iso_time_str(), ""});
 
         RuleEngine rule_engine{"rules.yaml"};
