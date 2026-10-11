@@ -3,7 +3,6 @@
 <head>
     <title>XDP-Engine Showcase</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <meta http-equiv="refresh" content="1">
 </head>
 <body class="bg-gray-900 text-white font-mono h-screen overflow-hidden flex flex-col">
     <div class="p-6 flex justify-between items-center border-b border-gray-700 bg-gray-800 shadow-md">
@@ -41,38 +40,56 @@
     </div>
 
     <script>
-        // Use standard fetch without meta-refresh for smoother updates, but meta-refresh works as a fallback.
-        // We actually removed meta-refresh from head and use setInterval below.
-        document.querySelector('meta[http-equiv="refresh"]').remove();
+        let offlineStreak = 0;
         
         async function update() {
             try {
                 const pRes = await fetch('/api/panels');
+                if (!pRes.ok) return;
                 const pData = await pRes.json();
                 
-                const mode = pData.health.xdp_mode;
+                const mode = (pData.health && pData.health.xdp_mode) ? pData.health.xdp_mode.toUpperCase() : 'OFFLINE';
+                const isRunning = pData.health && pData.health.running;
                 const badge = document.getElementById('modeBadge');
-                if(mode.toUpperCase() === 'ENFORCE') {
-                    badge.textContent = 'ENFORCE MODE';
-                    badge.className = 'px-6 py-2 rounded-full font-bold text-xl bg-red-600 text-white shadow-[0_0_20px_rgba(220,38,38,0.7)] animate-none';
+                
+                if (!isRunning || mode === 'OFFLINE' || mode === 'STANDBY' || mode === 'UNKNOWN') {
+                    offlineStreak++;
+                    if (offlineStreak >= 2) {
+                        badge.textContent = 'Loading Mode...';
+                        badge.className = 'px-6 py-2 rounded-full font-bold text-xl uppercase animate-pulse shadow-[0_0_15px_rgba(255,255,255,0.3)] bg-gray-700 text-gray-300';
+                    }
                 } else {
-                    badge.textContent = 'DETECT MODE';
-                    badge.className = 'px-6 py-2 rounded-full font-bold text-xl bg-blue-600 text-white shadow-[0_0_20px_rgba(37,99,235,0.7)]';
+                    offlineStreak = 0;
+                    if(mode === 'ENFORCE') {
+                        badge.textContent = 'ENFORCE MODE';
+                        badge.className = 'px-6 py-2 rounded-full font-bold text-xl bg-red-600 text-white shadow-[0_0_20px_rgba(220,38,38,0.7)] animate-none';
+                    } else {
+                        badge.textContent = 'DETECT MODE';
+                        badge.className = 'px-6 py-2 rounded-full font-bold text-xl bg-blue-600 text-white shadow-[0_0_20px_rgba(37,99,235,0.7)]';
+                    }
                 }
                 
                 const sRes = await fetch('/api/summary');
                 const sData = await sRes.json();
-                document.getElementById('dropCounter').textContent = sData.total_drops.toLocaleString();
+                document.getElementById('dropCounter').textContent = (sData.total_drops || 0).toLocaleString();
                 
-                const rRes = await fetch('/api/drops_per_sec');
-                const rData = await rRes.json();
-                if(rData.length > 0) {
-                    document.getElementById('dropRate').textContent = rData[rData.length-1].pps.toFixed(0) + ' / sec';
+                if (!isRunning) {
+                    document.getElementById('dropRate').textContent = '0 / sec';
+                } else {
+                    const rRes = await fetch('/api/drops_per_sec');
+                    const rData = await rRes.json();
+                    if(rData.length > 0) {
+                        document.getElementById('dropRate').textContent = rData[rData.length-1].pps.toFixed(0) + ' / sec';
+                    } else {
+                        document.getElementById('dropRate').textContent = '0 / sec';
+                    }
                 }
                 
                 const cards = document.getElementById('attackCards');
                 cards.innerHTML = '';
-                if(pData.active_blocks.length === 0) {
+                if (!isRunning) {
+                    cards.innerHTML = '<div class="text-gray-500 italic p-4 text-center">Engine is stopped. Waiting to start...</div>';
+                } else if(pData.active_blocks.length === 0) {
                     cards.innerHTML = '<div class="text-gray-500 italic p-4 text-center">Idle. Waiting for attacks...</div>';
                 } else {
                     pData.active_blocks.forEach(b => {
@@ -97,9 +114,17 @@
                     if(item.row_type === 'alert') color = 'text-yellow-400';
                     if(item.row_type === 'action' && item.title === 'block') color = 'text-red-400';
                     if(item.row_type === 'action' && item.title === 'detected') color = 'text-blue-400';
-                    feed.innerHTML += `<div class="mb-1 ${color}"><span class="text-gray-500 opacity-70">[${item.ts.replace('T',' ').replace('Z','')}]</span> <span class="uppercase tracking-widest">[${item.row_type}]</span> ${item.title} - ${item.src_ip} ${item.detail}</div>`;
+                    const tsStr = (item.ts || '').replace('T',' ').replace('Z','');
+                    feed.innerHTML += `<div class="mb-1 ${color}"><span class="text-gray-500 opacity-70">[${tsStr}]</span> <span class="uppercase tracking-widest">[${item.row_type}]</span> ${item.title} - ${item.src_ip} ${item.detail}</div>`;
                 });
-            } catch(e) { console.error(e); }
+            } catch(e) {
+                console.error(e);
+                const badge = document.getElementById('modeBadge');
+                if (badge) {
+                    badge.textContent = 'Loading Mode...';
+                    badge.className = 'px-6 py-2 rounded-full font-bold text-xl uppercase animate-pulse shadow-[0_0_15px_rgba(255,255,255,0.3)] bg-gray-700 text-gray-300';
+                }
+            }
         }
         
         setInterval(update, 1000);

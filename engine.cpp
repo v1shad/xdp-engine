@@ -471,7 +471,7 @@ int main(int argc, char** argv) {
     add_iface_ips(allow, iface);
     add_gateway_ips(allow);
 
-    bool enforce_mode = false;
+    std::atomic<bool> enforce_mode{false};
     int ttl = 600;
     int threshold = 5;
     int window = 60;
@@ -590,7 +590,10 @@ int main(int argc, char** argv) {
     try {
         Storage storage{"engine.db"};
         storage.wipe_history();
-        storage.insert_action({"mode_change", mode_str, get_iso_time_str(), ""});
+        storage.insert_action({get_iso_time_str(), "", "mode_change", mode_str});
+        struct timespec init_ts;
+        clock_gettime(CLOCK_REALTIME, &init_ts);
+        storage.insert_metrics(init_ts.tv_sec, 0, 0, 0, 0, 0, 0, 200, enforce_mode ? "ENFORCE" : "DETECT");
 
         RuleEngine rule_engine{"rules.yaml"};
         // override_rules removed to respect rules.yaml
@@ -618,7 +621,7 @@ int main(int argc, char** argv) {
             
             if (!enforce_mode) {
                 print_log("[DETECTED]", "would block " + ip_str + " (detect mode)", "\x1b[34m");
-                storage.insert_action({"detected", ip_str, get_iso_time_str(), rule});
+                storage.insert_action({get_iso_time_str(), ip_str, "detected", rule});
                 return 1;
             }
             return blocklist.block(*ip, rule, std::chrono::seconds(seconds), false, false) ? 0 : -1;
@@ -736,7 +739,66 @@ int main(int argc, char** argv) {
             std::istringstream iss{line};
             std::string cmd, arg, arg2;
             iss >> cmd >> arg >> arg2;
-            if (cmd == "quit") g_running = false;
+            if (cmd == "quit") {
+                g_running = false;
+                out("shutting down engine");
+            }
+            else if (cmd == "mode") {
+                if (arg == "enforce") {
+                    enforce_mode = true;
+                    storage.insert_action({get_iso_time_str(), "", "mode_change", "ENFORCE"});
+                    auto [d, p, t, u, ic, o] = blocklist.get_stats();
+                    struct timespec ts;
+                    clock_gettime(CLOCK_REALTIME, &ts);
+                    storage.insert_metrics(ts.tv_sec, d, p, t, u, ic, o, engine.get_limit(), "ENFORCE");
+                    out("Mode switched to: ENFORCE");
+                } else if (arg == "detect") {
+                    enforce_mode = false;
+                    storage.insert_action({get_iso_time_str(), "", "mode_change", "DETECT"});
+                    auto [d, p, t, u, ic, o] = blocklist.get_stats();
+                    struct timespec ts;
+                    clock_gettime(CLOCK_REALTIME, &ts);
+                    storage.insert_metrics(ts.tv_sec, d, p, t, u, ic, o, engine.get_limit(), "DETECT");
+                    out("Mode switched to: DETECT");
+                } else if (arg == "show" || arg.empty()) {
+                    out(std::string("Current mode: ") + (enforce_mode ? "ENFORCE" : "DETECT"));
+                } else {
+                    out("Usage: mode [detect|enforce|show]");
+                }
+            }
+            else if (cmd == "enforce") {
+                enforce_mode = true;
+                storage.insert_action({get_iso_time_str(), "", "mode_change", "ENFORCE"});
+                auto [d, p, t, u, ic, o] = blocklist.get_stats();
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                storage.insert_metrics(ts.tv_sec, d, p, t, u, ic, o, engine.get_limit(), "ENFORCE");
+                out("Mode switched to: ENFORCE");
+            }
+            else if (cmd == "detect") {
+                enforce_mode = false;
+                storage.insert_action({get_iso_time_str(), "", "mode_change", "DETECT"});
+                auto [d, p, t, u, ic, o] = blocklist.get_stats();
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                storage.insert_metrics(ts.tv_sec, d, p, t, u, ic, o, engine.get_limit(), "DETECT");
+                out("Mode switched to: DETECT");
+            }
+            else if (cmd == "allow") {
+                if (auto ip = parse_ipv4_local(arg)) {
+                    if (blocklist.allow_ip(*ip)) out("allowed " + arg);
+                    else out("failed to allow " + arg);
+                } else out("invalid IPv4 address");
+            }
+            else if (cmd == "unallow") {
+                if (auto ip = parse_ipv4_local(arg)) {
+                    if (blocklist.unallow_ip(*ip)) out("unallowed " + arg);
+                    else out("failed to unallow " + arg);
+                } else out("invalid IPv4 address");
+            }
+            else if (cmd == "alerts") {
+                storage.print_last_alerts(10, out);
+            }
             else if (cmd == "list")  blocklist.print_blocked(out);
             else if (cmd == "stats") blocklist.print_stats(out);
             else if (cmd == "block" || cmd == "unblock") {
@@ -812,6 +874,8 @@ int main(int argc, char** argv) {
             }
         }
         log_info("shutting down, detaching XDP");
+        storage.insert_metrics(0, 0, 0, 0, 0, 0, 0, 0, "OFFLINE");
+        storage.insert_action({get_iso_time_str(), "", "engine_stop", "shutdown"});
     } catch (const std::exception& e) {
         std::cerr << "fatal: " << e.what() << "\n";
         return 1;

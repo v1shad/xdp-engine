@@ -4,19 +4,30 @@ from flask import Flask, render_template, jsonify, g, request
 import time
 
 app = Flask(__name__)
-DB_PATH = os.environ.get("ENGINE_DB", "/opt/xdp-engine/engine.db")
-if not os.path.exists(DB_PATH) and os.path.exists("../engine.db"):
-    DB_PATH = "../engine.db"
-elif not os.path.exists(DB_PATH) and os.path.exists("engine.db"):
-    DB_PATH = "engine.db"
+DB_PATH = os.environ.get("ENGINE_DB")
+if not DB_PATH:
+    if os.path.exists("../engine.db"):
+        DB_PATH = os.path.abspath("../engine.db")
+    elif os.path.exists("engine.db"):
+        DB_PATH = os.path.abspath("engine.db")
+    elif os.path.exists("/opt/xdp-engine/engine.db"):
+        DB_PATH = "/opt/xdp-engine/engine.db"
+    else:
+        DB_PATH = os.path.abspath("../engine.db")
+else:
+    DB_PATH = os.path.abspath(DB_PATH)
+
 print(f"[*] Dashboard starting. Using database: {DB_PATH}")
 
 def get_db():
     db = getattr(g, '_database', None)
     if db is None:
-        # Open READ-ONLY using URI
-        uri = f"file:{DB_PATH}?mode=ro"
-        db = g._database = sqlite3.connect(uri, uri=True)
+        # Open READ-ONLY using URI with fallback to standard connect
+        try:
+            uri = f"file:{DB_PATH}?mode=ro"
+            db = g._database = sqlite3.connect(uri, uri=True, timeout=10)
+        except Exception:
+            db = g._database = sqlite3.connect(DB_PATH, timeout=10)
         db.text_factory = lambda b: b.decode("utf-8", "replace")
         db.row_factory = sqlite3.Row
     return db
@@ -34,28 +45,36 @@ def index():
 
 @app.route('/api/summary')
 def api_summary():
-    db = get_db()
-    total_events = db.execute("SELECT count(*) FROM events").fetchone()[0]
-    total_alerts = db.execute("SELECT count(*) FROM alerts").fetchone()[0]
-    # Estimate active blocks (blocks in the last 10 minutes)
-    active_blocks = db.execute("""
-        SELECT count(*) FROM actions a 
-        WHERE action='block' AND datetime(ts) > datetime('now', '-10 minutes')
-        AND NOT EXISTS (
-            SELECT 1 FROM actions act WHERE act.action='unblocked' AND act.src_ip = a.src_ip AND act.ts >= a.ts
-        )
-    """).fetchone()[0]
-    
-    # Total drops (max dropped metric)
-    row = db.execute("SELECT dropped FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
-    total_drops = row[0] if row else 0
-    
-    return jsonify({
-        "total_events": total_events,
-        "total_alerts": total_alerts,
-        "active_blocks": active_blocks,
-        "total_drops": total_drops
-    })
+    try:
+        db = get_db()
+        total_events = db.execute("SELECT count(*) FROM events").fetchone()[0]
+        total_alerts = db.execute("SELECT count(*) FROM alerts").fetchone()[0]
+        # Estimate active blocks (blocks in the last 10 minutes)
+        active_blocks = db.execute("""
+            SELECT count(*) FROM actions a 
+            WHERE action='block' AND datetime(ts) > datetime('now', '-10 minutes')
+            AND NOT EXISTS (
+                SELECT 1 FROM actions act WHERE act.action='unblocked' AND act.src_ip = a.src_ip AND act.ts >= a.ts
+            )
+        """).fetchone()[0]
+        
+        # Total drops (max dropped metric)
+        row = db.execute("SELECT dropped FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
+        total_drops = row[0] if row else 0
+        
+        return jsonify({
+            "total_events": total_events,
+            "total_alerts": total_alerts,
+            "active_blocks": active_blocks,
+            "total_drops": total_drops
+        })
+    except Exception:
+        return jsonify({
+            "total_events": 0,
+            "total_alerts": 0,
+            "active_blocks": 0,
+            "total_drops": 0
+        })
 
 @app.route('/api/alerts')
 def api_alerts():
@@ -147,59 +166,67 @@ def api_alert(alert_id):
 
 @app.route('/api/panels')
 def api_panels():
-    db = get_db()
-    
-    rows = db.execute("""
-        SELECT a.src_ip, a.block_seconds, 
-               CAST((strftime('%s', 'now') - strftime('%s', a.ts)) AS INTEGER) as age,
-               o.offense_count
-        FROM alerts a 
-        LEFT JOIN offenders o ON a.src_ip = o.ip 
-        WHERE a.action = 'block' AND a.block_seconds > 0
-        AND NOT EXISTS (
-            SELECT 1 FROM actions act 
-            WHERE act.action = 'unblocked' 
-            AND act.src_ip = a.src_ip 
-            AND act.ts >= a.ts
-        )
-    """).fetchall()
-    
-    active_blocks = []
-    for r in rows:
-        remain = r['block_seconds'] - r['age']
-        if remain > 0:
-            active_blocks.append({
-                "ip": r['src_ip'],
-                "remain": remain,
-                "offense": r['offense_count'] or 0
-            })
-            
-    offenders = db.execute("SELECT ip, offense_count, last_offense FROM offenders ORDER BY offense_count DESC, last_offense DESC LIMIT 10").fetchall()
-    
-    metrics = db.execute("SELECT tcp, udp, icmp, other, ts, syn_limit, xdp_mode FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
-    if not metrics:
-        metrics = {"tcp": 0, "udp": 0, "icmp": 0, "other": 0, "ts": 0, "syn_limit": 200, "xdp_mode": "unknown"}
-        
-    now = int(time.time())
-    engine_running = (now - metrics['ts']) < 15
     try:
-        db_size = os.path.getsize(DB_PATH)
-    except:
-        db_size = 0
+        db = get_db()
         
-    health = {
-        "running": engine_running,
-        "xdp_mode": metrics['xdp_mode'],
-        "syn_limit": metrics['syn_limit'],
-        "db_size": db_size
-    }
-    
-    return jsonify({
-        "active_blocks": active_blocks,
-        "offenders": [dict(o) for o in offenders],
-        "protocol_mix": {"tcp": metrics['tcp'], "udp": metrics['udp'], "icmp": metrics['icmp'], "other": metrics['other']},
-        "health": health
-    })
+        rows = db.execute("""
+            SELECT a.src_ip, a.block_seconds, 
+                   CAST((strftime('%s', 'now') - strftime('%s', a.ts)) AS INTEGER) as age,
+                   o.offense_count
+            FROM alerts a 
+            LEFT JOIN offenders o ON a.src_ip = o.ip 
+            WHERE a.action = 'block' AND a.block_seconds > 0
+            AND NOT EXISTS (
+                SELECT 1 FROM actions act 
+                WHERE act.action = 'unblocked' 
+                AND act.src_ip = a.src_ip 
+                AND act.ts >= a.ts
+            )
+        """).fetchall()
+        
+        active_blocks = []
+        for r in rows:
+            remain = r['block_seconds'] - r['age']
+            if remain > 0:
+                active_blocks.append({
+                    "ip": r['src_ip'],
+                    "remain": remain,
+                    "offense": r['offense_count'] or 0
+                })
+                
+        offenders = db.execute("SELECT ip, offense_count, last_offense FROM offenders ORDER BY offense_count DESC, last_offense DESC LIMIT 10").fetchall()
+        
+        metrics = db.execute("SELECT tcp, udp, icmp, other, ts, syn_limit, xdp_mode FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
+        if not metrics:
+            metrics = {"tcp": 0, "udp": 0, "icmp": 0, "other": 0, "ts": 0, "syn_limit": 200, "xdp_mode": "STANDBY"}
+            
+        now = int(time.time())
+        engine_running = (now - metrics['ts']) < 8 and str(metrics['xdp_mode']).upper() not in ('OFFLINE', 'STANDBY', 'UNKNOWN')
+        try:
+            db_size = os.path.getsize(DB_PATH)
+        except:
+            db_size = 0
+            
+        health = {
+            "running": engine_running,
+            "xdp_mode": metrics['xdp_mode'],
+            "syn_limit": metrics['syn_limit'],
+            "db_size": db_size
+        }
+        
+        return jsonify({
+            "active_blocks": active_blocks,
+            "offenders": [dict(o) for o in offenders],
+            "protocol_mix": {"tcp": metrics['tcp'], "udp": metrics['udp'], "icmp": metrics['icmp'], "other": metrics['other']},
+            "health": health
+        })
+    except Exception as e:
+        return jsonify({
+            "active_blocks": [],
+            "offenders": [],
+            "protocol_mix": {"tcp": 0, "udp": 0, "icmp": 0, "other": 0},
+            "health": {"running": False, "xdp_mode": "STANDBY", "syn_limit": 200, "db_size": 0, "error": str(e)}
+        })
 
 @app.route('/api/timeline')
 def api_timeline():
